@@ -30,11 +30,18 @@ STATE_MAX_AGE_SECONDS = 600
 CodeExchange = Callable[[str], Awaitable[dict[str, Any]]]
 
 
-def build_authorize_url(settings: Settings, state: str) -> str:
+def build_authorize_url(settings: Settings, state: str, *, commands: bool = False) -> str:
+    """Build the authorize URL.
+
+    `commands` defaults to false. The read-only sign-in leaves it false, so
+    vehicle_cmds is not requested even when TESLA_ENABLE_COMMANDS is set.
+    Only the commands sign-in passes true, and only when that flag is on.
+    """
     settings.require_client()
     scopes = requested_scopes(
         location=settings.enable_location,
         charging_history=settings.enable_charging_history,
+        commands=commands,
     )
     query = urlencode(
         {

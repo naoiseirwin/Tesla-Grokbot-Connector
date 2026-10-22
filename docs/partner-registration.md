@@ -19,7 +19,7 @@ Request only what you will use:
 | `vehicle_location` | Only if you set `TESLA_ENABLE_LOCATION=true`. |
 | `vehicle_charging_cmds` | Only if you set `TESLA_ENABLE_CHARGING_HISTORY=true`. This scope also allows charge start and stop. This server still has no charge-control tool. |
 | `user_data` | Do not enable. It exposes home address and contact info. |
-| `vehicle_cmds` | Do not enable. |
+| `vehicle_cmds` | Leave off for the read-only connector. Enable it only if you are setting up the optional commands program. [docs/COMMANDS.md](COMMANDS.md). |
 
 Allowed origins must include the root of the domain you register. Redirect
 URIs:
@@ -47,8 +47,9 @@ for a GitHub Pages layout, including `.nojekyll`. `github.io` may be rejected
 because it is a public-suffix domain. That is unconfirmed. A domain you own is
 the fallback.
 
-Nothing in this server reads the private key. Keep it in case you later add
-commands in a different project. Do not commit it.
+The read-only server does not read the private key. The optional commands
+program does not read it either. Tesla's `tesla-http-proxy` does, if you
+follow [docs/COMMANDS.md](COMMANDS.md). Do not commit the private key.
 
 ## Register once per region
 

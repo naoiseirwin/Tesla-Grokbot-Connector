@@ -45,8 +45,13 @@ value this server assumes when `expires_in` is missing.
 Every Grok Bot on your Cursor account shares that computer. A Bot that can
 read the token file **and** `TESLA_TOKEN_KEY` can decrypt the tokens.
 Encryption limits casual exposure. It does not isolate one of your Bots from
-another. The requested scopes are read-only, which is why that sharing is
-acceptable for this connector. Do not add command scopes to this install.
+another. The read-only connector does not request command scopes. The
+optional commands program can request `vehicle_cmds`, and only when
+`TESLA_ENABLE_COMMANDS=true`. After that grant, the token is enough to
+command the car if the virtual key is also paired and the signing proxy is
+running. That is a different risk from the read-only install. See
+[docs/COMMANDS.md](docs/COMMANDS.md). Removing the key from the car stops
+commands even if the token file remains.
 
 `history.db` is mode `600`. It stores VINs and vehicle snapshots. Location is
 stored only when `TESLA_ENABLE_LOCATION` is on, and only rounded to about
@@ -60,15 +65,19 @@ Requested by default: `openid`, `offline_access`, `vehicle_device_data`.
 `vehicle_location` and `vehicle_charging_cmds` are off unless you set the
 matching environment flag and sign in again. `vehicle_charging_cmds` is the
 scope Tesla uses for charging history **and** for starting and stopping a
-charge. This repository has no charge-control function. `vehicle_cmds` and
-`user_data` are never requested.
+charge. The read-only server has no charge-control function. `user_data` is
+never requested. `vehicle_cmds` is not requested by `tesla-mcp auth`. The
+optional commands connector requests it only when `TESLA_ENABLE_COMMANDS=true`.
 
 The server reads the `scp` claim at startup and does not register a tool
 whose scope is missing.
 
-The Fleet client refuses any path that is not list, one vehicle,
+The read-only Fleet client refuses any path that is not list, one vehicle,
 `vehicle_data`, `wake_up`, or charging history. `wake_up` is rejected unless
 the caller is the wake tool. The poller constructs a client that cannot wake.
+Command sends, when you opt in, go to a local `tesla-http-proxy` from the
+separate `tesla-commands` connector. They are not added to the read-only
+client. See [docs/COMMANDS.md](docs/COMMANDS.md).
 
 ## Revoke access
 

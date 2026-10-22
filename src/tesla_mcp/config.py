@@ -5,6 +5,7 @@ from __future__ import annotations
 import os
 from dataclasses import dataclass
 from pathlib import Path
+from urllib.parse import urlparse
 
 from dotenv import load_dotenv
 
@@ -13,6 +14,11 @@ from .regions import AUTHORIZE_URL, DEFAULT_REDIRECT_URI, TOKEN_URL, get_region
 
 HARD_WAKE_PER_MINUTE = 3
 MIN_POLL_INTERVAL_HOURS = 1.0
+DEFAULT_COMMANDS_DAILY_CAP = 10
+MAX_COMMANDS_DAILY_CAP = 40
+DEFAULT_COMMANDS_PER_COMMAND_DAILY_CAP = 3
+MAX_COMMANDS_PER_COMMAND_DAILY_CAP = 10
+_LOOPBACK_HOSTS = frozenset({"localhost", "127.0.0.1", "::1"})
 _TRUE = {"1", "true", "yes", "on"}
 _FALSE = {"0", "false", "no", "off", ""}
 
@@ -41,6 +47,54 @@ def _int(value: str | None, default: int) -> int:
     if value is None or value.strip() == "":
         return default
     return int(value)
+
+
+def _bounded_int(value: str | None, default: int, *, name: str, upper: int) -> int:
+    try:
+        parsed = _int(value, default)
+    except ValueError:
+        raise ValueError(f"{name} must be a whole number from 0 to {upper}.") from None
+    if parsed < 0 or parsed > upper:
+        raise ValueError(f"{name} must be a whole number from 0 to {upper}. Got {parsed}.")
+    return parsed
+
+
+def _csv(value: str | None) -> tuple[str, ...]:
+    if value is None or not value.strip():
+        return ()
+    names: list[str] = []
+    seen: set[str] = set()
+    for part in value.split(","):
+        name = part.strip().lower().replace("-", "_")
+        if name and name not in seen:
+            seen.add(name)
+            names.append(name)
+    return tuple(names)
+
+
+def _proxy_url(value: str | None, *, allow_remote: bool) -> str | None:
+    """Base URL of the local signing proxy. Empty means live sends are refused."""
+    if value is None or not value.strip():
+        return None
+    url = value.strip().rstrip("/")
+    parsed = urlparse(url)
+    host = (parsed.hostname or "").lower()
+    if parsed.scheme not in {"http", "https"} or not host:
+        raise ValueError(
+            "TESLA_COMMAND_PROXY_URL must be an http or https URL, "
+            "for example https://127.0.0.1:4443."
+        )
+    if parsed.username or parsed.password or parsed.query or parsed.fragment:
+        raise ValueError(
+            "TESLA_COMMAND_PROXY_URL must not include a username, password, query, or fragment."
+        )
+    if host not in _LOOPBACK_HOSTS and not allow_remote:
+        raise ValueError(
+            "TESLA_COMMAND_PROXY_URL must point at this computer "
+            "(localhost, 127.0.0.1, or ::1). The access token is sent to that URL. "
+            "Set TESLA_COMMAND_PROXY_ALLOW_REMOTE=true only if you accept that."
+        )
+    return url
 
 
 def load_config_files() -> None:
@@ -75,6 +129,19 @@ class Settings:
     token_url: str
     auth_url: str
     timezone: str
+    # Command fields are ignored by the read-only server. Defaults keep commands off.
+    enable_commands: bool = False
+    commands_dry_run: bool = True
+    commands_allowlist: tuple[str, ...] = ()
+    commands_daily_cap: int = DEFAULT_COMMANDS_DAILY_CAP
+    commands_per_command_daily_cap: int = DEFAULT_COMMANDS_PER_COMMAND_DAILY_CAP
+    command_proxy_url: str | None = None
+    command_proxy_ca: str | None = None
+    command_proxy_insecure: bool = False
+    command_proxy_allow_remote: bool = False
+    # Set by the commands server when a command variable is invalid.
+    # The read-only server leaves this empty and does not read those variables.
+    command_config_error: str | None = None
 
     @property
     def fleet_base(self) -> str:
@@ -152,6 +219,9 @@ class Settings:
         interval = max(_int(os.environ.get("TESLA_WAKE_MIN_INTERVAL_SECONDS"), 1800), 0)
         poll_hours = float(os.environ.get("TESLA_POLL_INTERVAL_HOURS", "2"))
         fleet_base = os.environ.get("TESLA_FLEET_API_BASE") or None
+        # Command variables (TESLA_ENABLE_COMMANDS, TESLA_COMMANDS_*, TESLA_COMMAND_PROXY_*)
+        # are intentionally not read here. A bad value in the shared config.env must not
+        # stop the read-only server. tesla_commands.config loads them for the commands server.
         return cls(
             client_id=os.environ.get("TESLA_CLIENT_ID", "").strip(),
             client_secret=os.environ.get("TESLA_CLIENT_SECRET", "").strip(),

@@ -1,7 +1,9 @@
 # Contributing
 
-This is a read-only Tesla Fleet API connector. Changes that add a vehicle
-command, a virtual key, or `tesla-http-proxy` do not belong here.
+The `tesla-mcp` connector is read-only. Vehicle commands belong only in the
+optional `tesla_commands` package (`tesla-commands-mcp`), which is off by
+default. Do not add a command tool, a virtual key, or `tesla-http-proxy` to
+`src/tesla_mcp`.
 
 ## Setup
 
@@ -19,13 +21,15 @@ out of CI.
 
 - Do not commit `.env`, PEM files, or `.tesla-mcp/`.
 - `.env.example` is placeholders only.
-- CI runs `gitleaks detect` and `pytest`, including a scan that the `src/`
-  tree contains no command endpoint strings other than `wake_up`.
+- CI runs `gitleaks detect` and `pytest`, including a scan that
+  `src/tesla_mcp` contains no command endpoint strings other than `wake_up`.
+  `src/tesla_commands` is the only package allowed to name those endpoints.
 
 ## Pull requests
 
-- Keep the public surface read-only. `tesla_wake_and_refresh` is the only
-  wake path, and it stays behind `confirm=true` and the wake budget.
+- Keep the `tesla-mcp` public surface read-only. `tesla_wake_and_refresh` is
+  the only wake path on that server, and it stays behind `confirm=true` and
+  the wake budget. A command that wakes the car must use that same budget.
 - Location and charging history stay opt-in and off by default.
 - If you touch token refresh, keep the rule: persist the new refresh token
   atomically before anything uses the new access token.

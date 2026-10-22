@@ -102,4 +102,13 @@ be named like an official Tesla product (example: "GrokBot Vehicle Bridge").
 
 All Bots on this Cursor account share the computer. Say that once. The token
 file is encrypted with `TESLA_TOKEN_KEY`. Another Bot that has the key can
-read it. Scopes are read-only.
+read it. This skill's scopes are read-only.
+
+## Commands are a different connector
+
+This skill is the read-only `tesla` connector. It does not send vehicle
+commands. Lock, climate, charge, lights, horn, and sentry on live in the
+optional `tesla-commands` connector, which is off by default. Do not add
+those tools here. If the user wants them, point them at `docs/COMMANDS.md`
+and do not turn `TESLA_COMMANDS_DRY_RUN` off unless they have read that page
+and asked for a live command.

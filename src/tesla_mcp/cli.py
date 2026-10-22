@@ -16,7 +16,9 @@ tesla-mcp is a read-only Tesla Fleet API server for Grok Bot.
   tesla-mcp register-partner --domain <domain>
   tesla-mcp gen-key          Print a new token encryption key (do not paste it into chat)
 
-There is no vehicle-command tool, no virtual key, and no public server.
+There is no vehicle-command tool on this server, no virtual key, and no public server.
+Optional commands are a separate program, tesla-commands-mcp, and are off by default.
+See docs/COMMANDS.md.
 """.strip()
 
 
