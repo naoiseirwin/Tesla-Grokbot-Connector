@@ -1,0 +1,17 @@
+title = "tesla-grokbot-connector"
+
+[extend]
+useDefault = true
+
+[allowlist]
+description = "Placeholders and docs, not live credentials"
+paths = [
+  '''\.env\.example''',
+  '''docs/github-pages/callback\.html''',
+  '''CHANGELOG\.md''',
+]
+regexes = [
+  '''your_client_id_here''',
+  '''your_client_secret_here''',
+  '''your_base64_token_key_here''',
+]

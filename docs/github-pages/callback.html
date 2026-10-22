@@ -1,0 +1,19 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>Tesla connector code</title>
+  <meta name="referrer" content="no-referrer">
+</head>
+<body>
+  <h1>Copy this into the terminal on the Grok Bot computer</h1>
+  <p>Do not paste the code into chat. This page does not send it anywhere.</p>
+  <pre id="code">code: (missing)</pre>
+  <pre id="state">state: (missing)</pre>
+  <script>
+    var params = new URLSearchParams(window.location.search);
+    document.getElementById("code").textContent = "code: " + (params.get("code") || "(missing)");
+    document.getElementById("state").textContent = "state: " + (params.get("state") || "(missing)");
+  </script>
+</body>
+</html>

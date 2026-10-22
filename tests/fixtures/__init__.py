@@ -1,0 +1,1 @@
+"""Static Fleet API fixtures."""
