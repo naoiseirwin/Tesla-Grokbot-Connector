@@ -9,7 +9,12 @@ from pathlib import Path
 
 import pytest
 
-from tesla_mcp.config import HARD_WAKE_PER_MINUTE, Settings
+from tesla_mcp.config import (
+    DEFAULT_COMMANDS_DAILY_CAP,
+    DEFAULT_COMMANDS_PER_COMMAND_DAILY_CAP,
+    HARD_WAKE_PER_MINUTE,
+    Settings,
+)
 from tesla_mcp.crypto import generate_key, parse_key
 from tesla_mcp.partner import normalize_domain
 from tesla_mcp.regions import REGIONS
@@ -17,7 +22,9 @@ from tesla_mcp.scopes import FORBIDDEN_SCOPES, requested_scopes
 from tesla_mcp.vin import mask_path, mask_vin
 
 ROOT = Path(__file__).resolve().parents[1]
-SRC = ROOT / "src"
+# The scan guards the read-only package. The optional commands package lives
+# beside it and is the only place command endpoints are allowed.
+SRC = ROOT / "src" / "tesla_mcp"
 
 FORBIDDEN_ENDPOINT_STRINGS = (
     "door_lock",
@@ -56,6 +63,13 @@ def test_defaults_are_read_only(monkeypatch, tmp_path):
     assert settings.redirect_uri == "http://localhost:8765/callback"
     assert settings.fleet_base == REGIONS["na"].fleet_api
     assert settings.token_key is None
+    assert settings.enable_commands is False
+    assert settings.commands_dry_run is True
+    assert settings.commands_allowlist == ()
+    assert settings.commands_daily_cap == DEFAULT_COMMANDS_DAILY_CAP
+    assert settings.commands_per_command_daily_cap == DEFAULT_COMMANDS_PER_COMMAND_DAILY_CAP
+    assert settings.command_proxy_url is None
+    assert settings.command_proxy_insecure is False
 
 
 def test_wake_per_minute_cannot_exceed_teslas_cap(monkeypatch, tmp_path):

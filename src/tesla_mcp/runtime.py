@@ -43,7 +43,12 @@ class AppRuntime:
         return True
 
 
-def build_runtime(settings: Settings, exchange: Exchange | None = None) -> AppRuntime:
+def build_runtime(
+    settings: Settings,
+    exchange: Exchange | None = None,
+    *,
+    for_commands: bool = False,
+) -> AppRuntime:
     settings.data_dir.mkdir(parents=True, exist_ok=True)
     history = HistoryStore(settings.history_path)
     tokens = TokenStore(settings, exchange=exchange)
@@ -65,7 +70,8 @@ def build_runtime(settings: Settings, exchange: Exchange | None = None) -> AppRu
         granted_scopes=granted,
         scopes_known=record is not None,
     )
-    logger.info("tool=startup vin=- status=scopes category=-")
-    for line in runtime.describe_scopes().splitlines():
-        logger.info("%s", line)
+    if not for_commands:
+        logger.info("tool=startup vin=- status=scopes category=-")
+        for line in runtime.describe_scopes().splitlines():
+            logger.info("%s", line)
     return runtime

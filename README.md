@@ -31,14 +31,29 @@ dropping. The server can:
 
 ## What it does not do
 
-- It does not lock, unlock, honk, start climate, or start and stop charging.
-  Those endpoints are not in the source. The only Fleet API write is
-  `wake_up`, and only from `tesla_wake_and_refresh`.
+- The `tesla-mcp` server does not lock, unlock, honk, start climate, or
+  start and stop charging. Those tools are not registered on it. The only
+  Fleet API write on this server is `wake_up`, and only from
+  `tesla_wake_and_refresh`.
 - It does not use a virtual key or `tesla-http-proxy`.
 - It does not stream Fleet Telemetry and it does not talk to Tesla Energy
   products.
 - It does not request `vehicle_cmds` or `user_data`.
 - It does not wake the car for a status question, a report, or `tesla-mcp poll`.
+
+## Optional vehicle commands
+
+Lock, climate, charge, lights, horn, and sentry **on** are a separate
+program, `tesla-commands-mcp`. You add it as its own connector,
+`tesla-commands`, beside `tesla`. It is optional and **off by default**.
+Installing or running `tesla-mcp` does not add those tools and does not
+request `vehicle_cmds`.
+
+Commands stay in dry-run until you set `TESLA_COMMANDS_DRY_RUN=false`, and
+an empty allowlist allows none of them. Read
+**[docs/COMMANDS.md](docs/COMMANDS.md)** before you turn one on. That page
+covers the risks, the scope, pairing the virtual key, the signing proxy,
+and how to remove the key from the car.
 
 Charging history is off. Tesla only exposes it through `vehicle_charging_cmds`,
 which also allows charge control. Turn it on only if you accept that grant.
@@ -61,10 +76,13 @@ their READMEs on 22 Oct 2026.
   (98 Fleet API tools and 9 TeslaMate tools). Self-hosting is documented as
   an advanced option.
 
-This project is built for Grok Bot. It is strictly read-only: the source has
-no command tools, no virtual key, and no `tesla-http-proxy`. It runs locally
-on the Grok Bot computer as a stdio process, with no hosted server. Wakes go
-through one tool with a local budget, so Fleet API wake charges stay capped.
+This project is built for Grok Bot. The `tesla-mcp` connector is strictly
+read-only: it has no command tools, no virtual key, and no
+`tesla-http-proxy`. An optional commands program lives beside it and is off
+by default ([docs/COMMANDS.md](docs/COMMANDS.md)). The read-only connector
+runs locally on the Grok Bot computer as a stdio process, with no hosted
+server. Wakes go through one tool with a local budget, so Fleet API wake
+charges stay capped.
 Mileage, range, and low-charge answers come from a SQLite history on that
 same computer.
 
@@ -139,7 +157,8 @@ HTTP status.
 | `openid`, `offline_access`, `vehicle_device_data` | On |
 | `vehicle_location` | Off. Set `TESLA_ENABLE_LOCATION=true` and sign in again. |
 | `vehicle_charging_cmds` | Off. Set `TESLA_ENABLE_CHARGING_HISTORY=true` and sign in again. |
-| `vehicle_cmds`, `user_data` | Never requested |
+| `vehicle_cmds` | Not requested by `tesla-mcp`. Only `tesla-commands-mcp auth` requests it, and only when `TESLA_ENABLE_COMMANDS=true`. See [docs/COMMANDS.md](docs/COMMANDS.md). |
+| `user_data` | Never requested |
 
 Granted scopes are read from the access token at startup. A tool whose scope
 was not granted is not registered. Run `tesla-mcp scopes` to see the diff.

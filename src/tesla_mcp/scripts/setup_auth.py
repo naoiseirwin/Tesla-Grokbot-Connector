@@ -26,7 +26,7 @@ Never paste the authorization code, tokens, or client secret into chat.
 """.strip()
 
 
-def main(argv: list[str] | None = None) -> None:
+def main(argv: list[str] | None = None, *, include_commands: bool = False) -> None:
     parser = argparse.ArgumentParser(description="Sign in to Tesla Fleet API")
     parser.add_argument(
         "--stdio", action="store_true", help="Accepted for compatibility. This is the only mode."
@@ -55,11 +55,27 @@ def main(argv: list[str] | None = None) -> None:
         print(exc.message if isinstance(exc, TeslaAuthError) else exc.message, file=sys.stderr)
         raise SystemExit(1) from exc
 
+    # The read-only wizard passes include_commands=False and never asks for
+    # vehicle_cmds. The commands wizard passes True, and still only asks when
+    # TESLA_ENABLE_COMMANDS is on.
+    request_commands = include_commands and settings.enable_commands
+    if include_commands and not settings.enable_commands:
+        print(
+            "TESLA_ENABLE_COMMANDS is not true, so this sign-in will not request "
+            "vehicle_cmds. Set TESLA_ENABLE_COMMANDS=true and run "
+            "`tesla-commands-mcp auth` again before a command can be sent."
+        )
+    elif request_commands:
+        print(
+            "This sign-in will request vehicle_cmds. That scope lets an app command "
+            "the car. The read-only tesla-mcp server still has no command tools."
+        )
+
     completing = bool(args.redirect_url or args.code)
     if not completing:
         state = new_state()
         write_oauth_state(settings, state)
-        url = build_authorize_url(settings, state)
+        url = build_authorize_url(settings, state, commands=request_commands)
         print("Open this URL on this computer if the browser does not:")
         print(url)
         print()
@@ -90,7 +106,18 @@ def main(argv: list[str] | None = None) -> None:
     if "vehicle_charging_cmds" in record.scopes:
         print(
             "vehicle_charging_cmds is granted. Tesla includes charge control in that scope. "
-            "This server does not expose charge control."
+            "The read-only server does not expose charge control."
+        )
+    if request_commands and "vehicle_cmds" not in record.scopes:
+        print(
+            "The token does not include vehicle_cmds. Commands will be refused until "
+            "Tesla grants that scope. Enable it on the developer app, then run "
+            "`tesla-commands-mcp auth` again."
+        )
+    elif request_commands:
+        print(
+            "vehicle_cmds is granted. Commands stay in dry-run until "
+            "TESLA_COMMANDS_DRY_RUN=false. Read docs/COMMANDS.md before that."
         )
     print("Next: add the stdio command in Grok Bot. See README.")
 

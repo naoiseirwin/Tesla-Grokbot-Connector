@@ -202,7 +202,9 @@ unless you asked for a wake.
 - Do **not** put this only in a laptop `mcp.json` and expect Grok Bot to pick
   it up. Attach it by asking Grok Bot to add the stdio **command**.
 - Do **not** name the Tesla app as if it were an official Tesla product.
-- Do **not** enable `vehicle_cmds`.
+- Do **not** enable `vehicle_cmds` for the read-only `tesla` connector.
+  That scope is only for the optional commands program, which is off by
+  default. See [docs/COMMANDS.md](docs/COMMANDS.md).
 - Do **not** commit `.env`, `*.pem`, or `/workspace/.tesla-mcp/`.
 
 ## 8. Revoke / uninstall
