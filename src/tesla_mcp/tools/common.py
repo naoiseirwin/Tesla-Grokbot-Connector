@@ -9,7 +9,7 @@ from fastmcp import Context
 from ..errors import TeslaAsleepError, TeslaError
 from ..fleet import FleetClient
 from ..history import Snapshot
-from ..logging_utils import log_event
+from ..logging_utils import log_event, redact
 from ..runtime import AppRuntime
 from ..snapshot import data_endpoints, snapshot_from_vehicle_data, state_only_snapshot
 from ..time_utils import isoformat
@@ -18,7 +18,7 @@ from ..vin import mask_vin
 
 
 def failure(exc: TeslaError) -> dict[str, Any]:
-    return {"ok": False, "error": exc.message, "error_type": type(exc).__name__}
+    return {"ok": False, "error": redact(exc.message), "error_type": type(exc).__name__}
 
 
 async def require_app(ctx: Context | None) -> tuple[FleetClient, AppRuntime]:

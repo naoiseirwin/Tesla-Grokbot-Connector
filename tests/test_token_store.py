@@ -116,6 +116,23 @@ async def test_both_writes_fail_leaves_the_old_token_and_does_not_return_access(
     assert stored.access_token != "unused-access"
 
 
+def test_token_write_survives_a_short_os_write(tmp_path, monkeypatch):
+    settings = _settings(tmp_path)
+    real_write = os.write
+
+    def one_byte(fd: int, data: bytes | bytearray | memoryview) -> int:
+        buf = bytes(data)
+        if not buf:
+            return 0
+        return real_write(fd, buf[:1])
+
+    monkeypatch.setattr(os, "write", one_byte)
+    seed_token(settings, refresh="refresh-short-write")
+    stored = TokenStore(settings).load()
+    assert stored is not None
+    assert stored.refresh_token == "refresh-short-write"
+
+
 def test_wrong_key_cannot_read_the_file(tmp_path):
     settings = _settings(tmp_path)
     seed_token(settings)

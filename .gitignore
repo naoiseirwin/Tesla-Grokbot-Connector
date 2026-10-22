@@ -39,6 +39,15 @@ private-key.pem
 public-key.pem
 .tesla-mcp/
 .tesla_tokens/
+config.env
+tokens.json
+tokens.json.enc
+tokens.json.enc.tmp
+tokens.lock
+oauth-state
+oauth-state.tmp
+history.db
+history.db-*
 
 # IDE
 .vscode/

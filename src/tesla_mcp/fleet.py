@@ -209,9 +209,24 @@ class FleetClient:
         if response.status_code == 401:
             if code == "login_required" or _auth_retry:
                 raise TeslaAuthError(
-                    "Tesla returned 401 login_required. Run `tesla-mcp auth` again."
+                    "Tesla returned 401 login_required. Run `tesla-mcp auth` again.",
+                    401,
                 )
-            await self.runtime.tokens.force_refresh()
+            try:
+                await self.runtime.tokens.force_refresh()
+            except TeslaError as exc:
+                if _is_wake(method, path):
+                    raise TeslaError(
+                        "Tesla returned HTTP 401 for wake_up. The wake was not sent again.",
+                        401,
+                    ) from exc
+                raise
+            if _is_wake(method, path):
+                raise TeslaError(
+                    "Tesla returned HTTP 401 for wake_up. The access token was refreshed, "
+                    "but the wake was not sent again because another wake would be billed.",
+                    401,
+                )
             return await self._request(
                 method,
                 path,
@@ -221,19 +236,33 @@ class FleetClient:
                 _rate_retry=_rate_retry,
             )
         if response.status_code == 408:
+            if _is_wake(method, path):
+                raise TeslaAsleepError(
+                    "Tesla returned HTTP 408 for wake_up. That response is billed, "
+                    "and the wake was not sent again.",
+                    408,
+                )
             raise TeslaAsleepError(
                 "Vehicle is asleep or offline (HTTP 408). No wake was sent. "
-                "Tesla still bills this response."
+                "Tesla still bills this response.",
+                408,
             )
         if response.status_code == 421:
             region = self.runtime.settings.region
             raise TeslaRegionError(
                 f"Tesla returned HTTP 421. This account is not in region {region!r} "
                 f"({self.runtime.settings.fleet_base}). Set TESLA_REGION to na, eu, or cn "
-                "and sign in again. The request was not retried against another region."
+                "and sign in again. The request was not retried against another region.",
+                421,
             )
         if response.status_code == 429:
             delay = _retry_after_seconds(response.headers.get("Retry-After"))
+            # A wake retry is a second billed wake. Reads retry once for a short Retry-After.
+            if _is_wake(method, path):
+                raise TeslaRateLimitError(
+                    "Tesla rate limited wake_up (HTTP 429). The wake was not sent again.",
+                    retry_after=delay,
+                )
             if delay is not None and delay <= 2 and not _rate_retry:
                 sleeper = self._sleep
                 if sleeper is None:
@@ -273,6 +302,10 @@ class FleetClient:
 
 def _vehicle_path(vin: str) -> str:
     return f"/api/1/vehicles/{quote(vin, safe='')}"
+
+
+def _is_wake(method: str, path: str) -> bool:
+    return method.upper() == "POST" and path.endswith("/wake_up")
 
 
 def _retry_after_seconds(header: str | None) -> float | None:

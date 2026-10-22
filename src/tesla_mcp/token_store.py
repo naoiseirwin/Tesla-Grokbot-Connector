@@ -122,7 +122,7 @@ class TokenStore:
         fd: int | None = None
         try:
             fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
-            os.write(fd, blob)
+            _write_all(fd, blob)
             os.fsync(fd)
             os.chmod(tmp, 0o600)
             if self._before_replace is not None:
@@ -237,6 +237,16 @@ class TokenStore:
         from .auth_flow import exchange_refresh_token
 
         return await exchange_refresh_token(self.settings, refresh_token)
+
+
+def _write_all(fd: int, blob: bytes) -> None:
+    """Write every byte. os.write may return early; a short write must not be renamed into place."""
+    view = memoryview(blob)
+    while view:
+        written = os.write(fd, view)
+        if written <= 0:
+            raise OSError("Could not write the token file.")
+        view = view[written:]
 
 
 def _unlink_quiet(path: Path) -> None:
