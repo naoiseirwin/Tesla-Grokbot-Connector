@@ -988,6 +988,42 @@ async def test_not_ready_writes_an_audit_line(monkeypatch, tmp_path):
     assert mask_vin(VIN) in text
 
 
+async def test_not_ready_scrubs_opaque_saved_tokens(monkeypatch, tmp_path):
+    from tesla_commands.execute import perform
+    from tesla_mcp.crypto import generate_key
+    from tesla_mcp.token_store import TokenRecord, TokenStore
+
+    _clear_tesla_env(monkeypatch)
+    monkeypatch.setenv("TESLA_MCP_DATA_DIR", str(tmp_path))
+    monkeypatch.setenv("TESLA_TOKEN_KEY", generate_key())
+    settings = Settings.load()
+    access = "opaque-access-token-value"
+    refresh = "opaque-refresh-token-value"
+    TokenStore(settings).save(
+        TokenRecord(
+            access_token=access,
+            refresh_token=refresh,
+            expires_at=9_999_999_999,
+            scopes=["vehicle_device_data"],
+            region="na",
+        )
+    )
+    selector = f"garage {access} then {refresh}"
+    result = await perform(None, "door_lock", {"label": f"note {refresh}"}, vin_selector=selector)
+    blob = json.dumps(result)
+    assert result["refusal_reason"] == "not_ready"
+    assert access not in blob
+    assert refresh not in blob
+    assert result["vehicle"] == "garage [redacted] then [redacted]"
+    assert "[redacted]" in str(result["parameters"])
+    text = _audit_text(settings)
+    assert "not_ready" in text
+    assert access not in text
+    assert refresh not in text
+    saved = _audit_records(settings)[-1]
+    assert saved["vehicle"] == "garage [redacted] then [redacted]"
+
+
 def test_audit_log_masks_a_vin_inside_a_longer_selector(tmp_path):
     from tesla_commands.audit import AuditLog
 

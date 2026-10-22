@@ -1,6 +1,8 @@
 """Logs name the tool, a masked VIN, the status, and the cost category.
 
 They do not include tokens, raw Fleet API bodies, or coordinates.
+httpx and httpcore stay at WARNING so a host that turns on root INFO
+logging does not print request URLs, which contain the full VIN.
 """
 
 from __future__ import annotations
@@ -41,6 +43,9 @@ def configure_logging(*, stderr: bool = False) -> None:
         handler = logging.StreamHandler(sys.stderr)
         handler.addFilter(RedactFilter())
         logger.addHandler(handler)
+    # Request logs include the URL. The proxy URL has the full VIN.
+    for name in ("httpx", "httpcore"):
+        logging.getLogger(name).setLevel(logging.WARNING)
 
 
 def log_event(tool: str, vin: str | None, status: str, category: str | None = None) -> None:

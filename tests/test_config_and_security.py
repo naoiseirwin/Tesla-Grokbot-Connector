@@ -187,3 +187,34 @@ def test_keypair_script_refuses_the_git_repo(tmp_path):
     assert "BEGIN PUBLIC KEY" in (outside / "public-key.pem").read_text(encoding="utf-8")
     mode = (outside / "private-key.pem").stat().st_mode & 0o777
     assert mode == 0o600
+
+
+def test_configure_logging_hides_httpx_urls_that_contain_a_vin(caplog):
+    import logging
+
+    import httpx
+
+    from tesla_mcp.logging_utils import configure_logging, log_event
+
+    vin = "5YJ3E1EA7KF000001"
+    configure_logging()
+    assert logging.getLogger("httpx").level == logging.WARNING
+    assert logging.getLogger("httpcore").level == logging.WARNING
+
+    def _ok(_request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json={"response": {}})
+
+    root = logging.getLogger()
+    previous = root.level
+    root.setLevel(logging.INFO)
+    try:
+        with caplog.at_level(logging.DEBUG):
+            url = f"https://127.0.0.1:4443/api/1/vehicles/{vin}/command/door_lock"
+            with httpx.Client(transport=httpx.MockTransport(_ok)) as client:
+                client.post(url)
+            log_event("tesla_door_lock", vin, "ok", "command")
+    finally:
+        root.setLevel(previous)
+
+    assert vin not in caplog.text
+    assert mask_vin(vin) in caplog.text

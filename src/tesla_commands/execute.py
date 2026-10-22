@@ -67,16 +67,15 @@ async def perform(
     try:
         fleet, runtime = await require_app(ctx)
     except TeslaError as exc:
-        message = scrub_text(exc.message)
-        _audit_not_ready(command, parameters, vin_selector, message)
+        public = _audit_not_ready(command, parameters, vin_selector, exc.message)
         return {
             "ok": False,
             "sent": False,
             "dry_run": True,
             "command": command,
-            "parameters": public_parameters(parameters),
-            "vehicle": public_selector(vin_selector),
-            "error": message,
+            "parameters": public["parameters"],
+            "vehicle": public["vehicle"],
+            "error": public["error"],
             "error_type": type(exc).__name__,
             "refusal_reason": "not_ready",
         }
@@ -450,35 +449,67 @@ def _refuse_if_unusable(runtime: AppRuntime) -> None:
         raise CommandRefusal("invalid_timezone", _TIMEZONE_INVALID) from None
 
 
+def _saved_token_secrets(settings: Settings) -> tuple[str, ...]:
+    """Access and refresh tokens currently on disk. Empty when none can be read."""
+    from tesla_mcp.token_store import TokenStore
+
+    try:
+        record = TokenStore(settings).load()
+    except TeslaError:
+        return ()
+    if record is None:
+        return ()
+    values = (record.access_token, record.refresh_token, record.previous_refresh_token)
+    return tuple(item for item in values if isinstance(item, str) and len(item) >= 12)
+
+
 def _audit_not_ready(
     command: str,
     parameters: dict[str, Any],
     vin_selector: str | None,
     message: str,
-) -> None:
-    """Write the not_ready refusal. A missing client still leaves an audit line."""
+) -> dict[str, Any]:
+    """Write the not_ready refusal and return the scrubbed fields for the reply.
+
+    A missing client still leaves an audit line. Saved access and refresh
+    tokens are removed even when they are opaque and not JWT-shaped, including
+    when one of them is embedded in the vehicle selector.
+    """
+    secrets: tuple[str, ...] = ()
+    settings: Settings | None = None
     try:
         settings = Settings.load()
-        AuditLog(settings).append(
-            {
-                "timestamp": isoformat(utc_now()),
-                "command": command,
-                "parameters": public_parameters(parameters),
-                "vehicle": public_selector(vin_selector),
-                "vin_masked": "-",
-                "dry_run": True,
-                "live": False,
-                "result": "refused",
-                "refusal_reason": "not_ready",
-                "error": scrub_text(message),
-                "http_status": None,
-                "tesla_reason": None,
-                "would_send": None,
-                "woke": None,
-            }
-        )
+        secrets = _saved_token_secrets(settings)
     except (OSError, ValueError, TypeError, TeslaError):
-        return
+        settings = None
+        secrets = ()
+    parameters_public = public_parameters(parameters, secrets=secrets)
+    vehicle = public_selector(vin_selector, secrets=secrets)
+    error = scrub_text(message, secrets=secrets)
+    if settings is not None:
+        try:
+            AuditLog(settings).append(
+                {
+                    "timestamp": isoformat(utc_now()),
+                    "command": command,
+                    "parameters": parameters_public,
+                    "vehicle": vehicle,
+                    "vin_masked": "-",
+                    "dry_run": True,
+                    "live": False,
+                    "result": "refused",
+                    "refusal_reason": "not_ready",
+                    "error": error,
+                    "http_status": None,
+                    "tesla_reason": None,
+                    "would_send": None,
+                    "woke": None,
+                },
+                secrets=secrets,
+            )
+        except (OSError, ValueError, TypeError, TeslaError):
+            pass
+    return {"parameters": parameters_public, "vehicle": vehicle, "error": error}
 
 
 def _release(budget: CommandBudget, event_id: int | None) -> None:
