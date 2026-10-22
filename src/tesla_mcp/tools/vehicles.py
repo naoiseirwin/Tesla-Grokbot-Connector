@@ -9,7 +9,7 @@ from fastmcp import Context
 from ..errors import TeslaError
 from ..reports import weekly_mileage
 from ..snapshot import data_endpoints, raw_location, snapshot_from_vehicle_data
-from ..time_utils import isoformat, period_window, utc_now
+from ..time_utils import charging_history_bounds, isoformat, period_window, utc_now
 from ..vin import mask_vin
 from .common import failure, finish, live_or_cached, require_app, select_vehicle, status_dict
 
@@ -230,27 +230,44 @@ async def tesla_get_location(
 
 
 async def tesla_get_charging_history(
-    start: Annotated[str, "Start date or time (YYYY-MM-DD)."],
-    end: Annotated[str, "End date or time (YYYY-MM-DD)."],
+    start: Annotated[
+        str | None,
+        "Start date (YYYY-MM-DD) or ISO 8601 time. Defaults to 365 days before end. "
+        "A date is 00:00:00 UTC.",
+    ] = None,
+    end: Annotated[
+        str | None,
+        "End date (YYYY-MM-DD) or ISO 8601 time. Defaults to now. A date is 23:59:59 UTC.",
+    ] = None,
     vin: Annotated[str | None, _VIN_HELP] = None,
     ctx: Context | None = None,
 ) -> dict[str, Any]:
     """Charging sessions from Fleet API history. Off unless TESLA_ENABLE_CHARGING_HISTORY is set.
+
+    A date or a full ISO 8601 time is sent to Tesla as UTC. Ranges longer than
+    365 days are loaded as consecutive windows, because Tesla rejects one
+    request that covers more than a year. Sessions are merged, duplicates are
+    dropped, and the newest session is first. One call covers at most 10 years.
+    Omit both times for the last 365 days.
 
     The Tesla scope vehicle_charging_cmds also allows charge control. This server
     does not start, stop, or schedule charging. Whether home charging is included
     depends on Tesla's history API.
     """
     try:
-        fleet, runtime = await require_app(ctx)
+        fleet, _runtime = await require_app(ctx)
+        try:
+            start_at, end_at = charging_history_bounds(start, end, now=utc_now())
+        except ValueError as exc:
+            raise TeslaError(str(exc)) from exc
         vehicle, _all = await select_vehicle(fleet, vin)
-        sessions = await fleet.charging_history(vehicle.vin, start, end)
+        sessions = await fleet.charging_history(vehicle.vin, isoformat(start_at), isoformat(end_at))
         finish("tesla_get_charging_history", vehicle.vin, "ok", "data")
         return {
             "ok": True,
             "vin_masked": mask_vin(vehicle.vin),
-            "start": start,
-            "end": end,
+            "start": isoformat(start_at),
+            "end": isoformat(end_at),
             "sessions": sessions,
         }
     except TeslaError as exc:
