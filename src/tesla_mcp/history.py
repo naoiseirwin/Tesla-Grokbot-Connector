@@ -104,13 +104,21 @@ def _unflag(value: int | None) -> bool | None:
 
 
 class HistoryStore:
-    def __init__(self, path: Path) -> None:
+    def __init__(self, path: Path, *, required: bool = True) -> None:
         self.path = path
+        self.available = True
         path.parent.mkdir(parents=True, exist_ok=True)
         os.chmod(path.parent, 0o700)
-        with self._connect() as conn:
-            conn.executescript(_SCHEMA)
-        os.chmod(path, 0o600)
+        try:
+            with self._connect() as conn:
+                conn.executescript(_SCHEMA)
+            os.chmod(path, 0o600)
+        except sqlite3.Error:
+            # The read-only server still stops on a corrupt file. The commands
+            # server asks for required=False and refuses the command instead.
+            if required:
+                raise
+            self.available = False
 
     def _connect(self) -> sqlite3.Connection:
         conn = sqlite3.connect(self.path)

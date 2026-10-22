@@ -42,11 +42,12 @@ async def tesla_climate_off(
 
 async def tesla_set_cabin_temperature(
     driver_celsius: Annotated[
-        float,
-        "Driver-side cabin temperature in Celsius. Allowed range is 15 to 28.",
+        Any,
+        "Driver-side cabin temperature in Celsius. Allowed range is 15 to 28, "
+        "checked before rounding. Numeric strings and booleans are refused.",
     ],
     passenger_celsius: Annotated[
-        float | None,
+        Any,
         "Passenger-side temperature in Celsius. Omit to use the driver temperature.",
     ] = None,
     vin: Annotated[str | None, _VIN] = None,
@@ -68,11 +69,16 @@ async def tesla_set_cabin_temperature(
 
 async def tesla_set_seat_heater(
     seat: Annotated[
-        int,
-        "Seat id 0-5: 0 front left, 1 front right, 2 rear left, 3 rear center, "
-        "4 rear right, 5 third row.",
+        Any,
+        "Seat id 0-5 as a JSON integer: 0 front left, 1 front right, 2 rear left, "
+        "3 rear center, 4 rear right, 5 third row. Booleans, decimals, and numeric "
+        "strings are refused.",
     ],
-    level: Annotated[int, "Heater level 0 (off) through 3."],
+    level: Annotated[
+        Any,
+        "Heater level 0 (off) through 3, as a JSON integer. Booleans, decimals, "
+        "and numeric strings are refused.",
+    ],
     vin: Annotated[str | None, _VIN] = None,
     ctx: Context | None = None,
 ) -> dict[str, Any]:
@@ -91,7 +97,11 @@ async def tesla_set_seat_heater(
 
 
 async def tesla_set_steering_wheel_heat(
-    on: Annotated[bool, "True turns the steering wheel heater on. False turns it off."],
+    on: Annotated[
+        Any,
+        "True turns the steering wheel heater on. False turns it off. "
+        "Numbers and strings are refused.",
+    ],
     vin: Annotated[str | None, _VIN] = None,
     ctx: Context | None = None,
 ) -> dict[str, Any]:
@@ -104,7 +114,11 @@ async def tesla_set_steering_wheel_heat(
 
 
 async def tesla_set_charge_limit(
-    percent: Annotated[int, "Charge limit from 50 to 100 percent. Other values are refused."],
+    percent: Annotated[
+        Any,
+        "Charge limit from 50 to 100 as a JSON integer. Booleans, decimals, "
+        "and numeric strings are refused.",
+    ],
     vin: Annotated[str | None, _VIN] = None,
     ctx: Context | None = None,
 ) -> dict[str, Any]:

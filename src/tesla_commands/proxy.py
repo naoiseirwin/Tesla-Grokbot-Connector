@@ -14,9 +14,8 @@ from typing import Any
 from urllib.parse import quote, urlparse
 
 from tesla_mcp.config import Settings
-from tesla_mcp.http_util import error_code, safe_error_message
-from tesla_mcp.logging_utils import redact
 
+from .audit import scrub_text
 from .errors import CommandRefusal
 
 _LOOPBACK = frozenset({"localhost", "127.0.0.1", "::1"})
@@ -82,16 +81,53 @@ def _verify(settings: Settings) -> bool | str:
     return True
 
 
+def _json_body(response: Any) -> dict[str, Any] | None:
+    try:
+        body = response.json()
+    except (ValueError, UnicodeError, AttributeError):
+        return None
+    if isinstance(body, dict):
+        return body
+    return None
+
+
+def _string_field(body: dict[str, Any], key: str) -> str:
+    value = body.get(key)
+    if not isinstance(value, str):
+        return ""
+    return " ".join(value.split())
+
+
+def _error_field(body: dict[str, Any]) -> str:
+    error = body.get("error")
+    if isinstance(error, str):
+        return " ".join(error.split())
+    if isinstance(error, dict):
+        for key in ("message", "code"):
+            value = error.get(key)
+            if isinstance(value, str) and value.strip():
+                return " ".join(value.split())
+    description = body.get("error_description")
+    if isinstance(description, str):
+        return " ".join(description.split())
+    return ""
+
+
 def _tesla_text(response: Any) -> str:
-    detail = safe_error_message(response)
-    code = error_code(response)
+    """Tesla's sentence, with tokens and VINs removed. Never the raw body."""
+    body = _json_body(response)
+    detail = _string_field(body, "message") if body else ""
+    code = _error_field(body) if body else ""
     if detail and code and code not in detail:
         text = f"{detail} ({code})"
     else:
         text = detail or code
+    text = scrub_text(text)
     if not text:
         text = f"HTTP {response.status_code}"
-    return redact(text)
+    if len(text) > 200:
+        return text[:200].rstrip() + "…"
+    return text
 
 
 def interpret_response(response: Any) -> ProxyResult:
@@ -131,7 +167,7 @@ def interpret_response(response: Any) -> ProxyResult:
     inner = payload.get("response")
     reason = ""
     if isinstance(inner, dict) and isinstance(inner.get("reason"), str):
-        reason = redact(" ".join(inner["reason"].split()))
+        reason = scrub_text(" ".join(inner["reason"].split()))
     if isinstance(inner, dict) and inner.get("result") is False:
         shown = reason or "command rejected"
         return ProxyResult(

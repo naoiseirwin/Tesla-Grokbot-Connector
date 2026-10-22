@@ -279,8 +279,28 @@ async def test_validation_rejects_charge_limit_temperature_and_seat(tmp_path):
         build_body("steering_wheel_heat", {"on": "yes"})
 
 
+ALLOWED_COMMANDS = frozenset(
+    {
+        "climate_on",
+        "climate_off",
+        "set_cabin_temperature",
+        "seat_heater",
+        "steering_wheel_heat",
+        "set_charge_limit",
+        "charge_start",
+        "charge_stop",
+        "flash_lights",
+        "honk_horn",
+        "door_lock",
+        "sentry_on",
+    }
+)
+
+
 def test_excluded_commands_do_not_exist():
     names = set(COMMANDS)
+    assert names == ALLOWED_COMMANDS
+    assert "trigger_homelink" not in names
     endpoints = {spec.endpoint for spec in COMMANDS.values()}
     tool_names = {spec.tool_name for spec in COMMANDS.values()}
     for excluded in EXCLUDED_COMMANDS:
@@ -546,6 +566,8 @@ async def test_asleep_car_uses_the_shared_wake_cap(tmp_path):
         commands_dry_run=False,
         commands_allowlist=("door_lock",),
         wake_daily_cap=0,
+        commands_daily_cap=1,
+        commands_per_command_daily_cap=1,
     )
     seed_token(blocked, scopes=COMMAND_SCOPES)
     mcp = create_server(blocked)
@@ -558,6 +580,8 @@ async def test_asleep_car_uses_the_shared_wake_cap(tmp_path):
     assert refused["refusal_reason"] == "wake_budget"
     assert refused["sent"] is False
     assert command_calls == []
+    assert not any(str(call.request.url).endswith("/wake_up") for call in router.calls)
+    assert CommandBudget(blocked).peek("door_lock").allowed
 
     awake = command_settings(
         tmp_path / "awake",
@@ -664,24 +688,45 @@ async def test_read_only_fleet_client_rejects_command_paths(tmp_path):
 
 
 def test_command_env_defaults_and_bounds(monkeypatch, tmp_path):
+    from tesla_commands.config import apply_command_environment
+
     _clear_tesla_env(monkeypatch)
     monkeypatch.setenv("TESLA_MCP_DATA_DIR", str(tmp_path))
     monkeypatch.setenv("TESLA_COMMANDS_ALLOWLIST", " Door_Lock, climate-on , door_lock ")
     monkeypatch.setenv("TESLA_COMMAND_PROXY_URL", "https://127.0.0.1:4443/")
     monkeypatch.setenv("TESLA_ENABLE_COMMANDS", "true")
     monkeypatch.setenv("TESLA_COMMANDS_DRY_RUN", "false")
-    settings = Settings.load()
+    ignored = Settings.load()
+    assert ignored.enable_commands is False
+    assert ignored.commands_dry_run is True
+    assert ignored.command_proxy_url is None
+    settings = apply_command_environment(ignored)
     assert settings.enable_commands is True
     assert settings.commands_dry_run is False
     assert settings.commands_allowlist == ("door_lock", "climate_on")
     assert settings.command_proxy_url == "https://127.0.0.1:4443"
+    assert settings.command_config_error is None
     monkeypatch.setenv("TESLA_COMMANDS_DAILY_CAP", "100")
-    with pytest.raises(ValueError, match="TESLA_COMMANDS_DAILY_CAP"):
-        Settings.load()
+    over_cap = apply_command_environment(Settings.load())
+    assert over_cap.command_config_error is not None
+    assert "TESLA_COMMANDS_DAILY_CAP" in over_cap.command_config_error
+    assert over_cap.enable_commands is False
+    assert over_cap.commands_dry_run is True
     monkeypatch.setenv("TESLA_COMMANDS_DAILY_CAP", "10")
     monkeypatch.setenv("TESLA_COMMAND_PROXY_URL", "https://commands.example")
-    with pytest.raises(ValueError, match="this computer"):
-        Settings.load()
+    remote = apply_command_environment(Settings.load())
+    assert remote.command_config_error is not None
+    assert "this computer" in remote.command_config_error
+    assert remote.command_proxy_url is None
+    # The read-only loader still does not raise or keep the bad proxy.
+    assert Settings.load().command_proxy_url is None
+    monkeypatch.setenv("TESLA_COMMAND_PROXY_URL", "https://127.0.0.1:4443")
+    monkeypatch.setenv("TESLA_COMMANDS_DAILY_CAP", "10")
+    monkeypatch.setenv("TESLA_ENABLE_COMMANDS", "maybe")
+    bad_flag = apply_command_environment(Settings.load())
+    assert bad_flag.enable_commands is False
+    assert bad_flag.command_config_error is not None
+    assert "TESLA_ENABLE_COMMANDS" in bad_flag.command_config_error
 
 
 def test_commands_help_does_not_start_the_server(monkeypatch, capsys):
@@ -707,3 +752,326 @@ def test_commands_package_does_not_read_a_private_key():
     assert "BEGIN EC PRIVATE KEY" not in combined
     assert "private-key.pem" not in combined
     assert "LoadPrivateKey" not in combined
+
+
+def test_dry_run_stays_on_unless_explicitly_false():
+    from tesla_commands.config import commands_dry_run_enabled
+
+    for value in (None, "", " ", "\t", " \t ", "maybe", "true", "yes", "on", "1", "live"):
+        assert commands_dry_run_enabled(value) is True
+    for value in ("false", "FALSE", " false ", "0", "no", "off"):
+        assert commands_dry_run_enabled(value) is False
+
+
+async def test_blank_dry_run_does_not_send(monkeypatch, tmp_path):
+    from tesla_commands.config import apply_command_environment
+    from tesla_mcp.crypto import generate_key
+
+    _clear_tesla_env(monkeypatch)
+    monkeypatch.setenv("TESLA_MCP_DATA_DIR", str(tmp_path / "data"))
+    monkeypatch.setenv("TESLA_TOKEN_KEY", generate_key())
+    monkeypatch.setenv("TESLA_FLEET_API_BASE", "https://fleet.test")
+    monkeypatch.setenv("TESLA_TOKEN_URL", "https://auth.test/token")
+    monkeypatch.setenv("TESLA_ENABLE_COMMANDS", "true")
+    monkeypatch.setenv("TESLA_COMMANDS_DRY_RUN", " \t ")
+    monkeypatch.setenv("TESLA_COMMANDS_ALLOWLIST", "door_lock")
+    monkeypatch.setenv("TESLA_COMMAND_PROXY_URL", PROXY)
+    settings = apply_command_environment(Settings.load())
+    assert settings.commands_dry_run is True
+    assert settings.command_config_error is None
+    seed_token(settings, scopes=COMMAND_SCOPES)
+    mcp = create_server()
+    with respx.mock(assert_all_called=False) as router:
+        async with Client(mcp) as client:
+            result = tool_json(await client.call_tool("tesla_door_lock", {}))
+        assert router.calls == []
+    assert result["ok"] is True
+    assert result["sent"] is False
+    assert result["dry_run"] is True
+
+
+async def test_readonly_server_ignores_invalid_command_env(monkeypatch, tmp_path):
+    _clear_tesla_env(monkeypatch)
+    monkeypatch.setenv("TESLA_MCP_DATA_DIR", str(tmp_path))
+    monkeypatch.setenv("TESLA_COMMANDS_DAILY_CAP", "nope")
+    monkeypatch.setenv("TESLA_COMMAND_PROXY_URL", "https://user:s3cret@commands.example/hook")
+    monkeypatch.setenv("TESLA_COMMANDS_DRY_RUN", "")
+    monkeypatch.setenv("TESLA_ENABLE_COMMANDS", "maybe")
+    loaded = Settings.load()
+    assert loaded.enable_commands is False
+    assert loaded.commands_dry_run is True
+    assert loaded.command_proxy_url is None
+    mcp = create_readonly_server()
+    async with Client(mcp) as client:
+        names = {tool.name for tool in await client.list_tools()}
+    assert "tesla_list_vehicles" in names
+    assert "tesla_door_lock" not in names
+
+
+async def test_commands_server_refuses_invalid_config(monkeypatch, tmp_path):
+    from tesla_commands.config import apply_command_environment
+
+    _clear_tesla_env(monkeypatch)
+    monkeypatch.setenv("TESLA_MCP_DATA_DIR", str(tmp_path))
+    monkeypatch.setenv("TESLA_ENABLE_COMMANDS", "true")
+    monkeypatch.setenv("TESLA_COMMANDS_DRY_RUN", "false")
+    monkeypatch.setenv("TESLA_COMMANDS_DAILY_CAP", "nope")
+    monkeypatch.setenv("TESLA_COMMANDS_ALLOWLIST", "door_lock")
+    loaded = apply_command_environment(Settings.load())
+    mcp = create_server()
+    with respx.mock(assert_all_called=False) as router:
+        async with Client(mcp) as client:
+            result = tool_json(await client.call_tool("tesla_door_lock", {}))
+        assert router.calls == []
+    assert result["ok"] is False
+    assert result["sent"] is False
+    assert result["dry_run"] is True
+    assert result["refusal_reason"] == "invalid_config"
+    assert "TESLA_COMMANDS_DAILY_CAP" in str(result["error"])
+    assert "Nothing was sent" in str(result["error"])
+    assert _audit_records(loaded)[-1]["refusal_reason"] == "invalid_config"
+
+
+def test_commands_auth_refuses_bad_config_without_traceback(monkeypatch, capsys, tmp_path):
+    from tesla_mcp.crypto import generate_key
+    from tesla_mcp.scripts.setup_auth import main as auth_main
+
+    _clear_tesla_env(monkeypatch)
+    monkeypatch.setenv("TESLA_MCP_DATA_DIR", str(tmp_path))
+    monkeypatch.setenv("TESLA_CLIENT_ID", "client-id")
+    monkeypatch.setenv("TESLA_CLIENT_SECRET", "client-secret")
+    monkeypatch.setenv("TESLA_TOKEN_KEY", generate_key())
+    monkeypatch.setenv("TESLA_ENABLE_COMMANDS", "true")
+    monkeypatch.setenv("TESLA_COMMAND_PROXY_URL", "https://user:s3cret@127.0.0.1:4443")
+    with pytest.raises(SystemExit) as caught:
+        auth_main([], include_commands=True)
+    assert caught.value.code == 1
+    err = capsys.readouterr().err
+    assert "TESLA_COMMAND_PROXY_URL" in err
+    assert "s3cret" not in err
+    assert "Traceback" not in err
+
+
+async def test_tool_layer_rejects_bools_strings_and_decimals(tmp_path):
+    settings = command_settings(tmp_path)
+    seed_token(settings, scopes=COMMAND_SCOPES)
+    mcp = create_server(settings)
+    async with Client(mcp) as client:
+        seat_bool = tool_json(
+            await client.call_tool("tesla_set_seat_heater", {"seat": True, "level": 1})
+        )
+        level_string = tool_json(
+            await client.call_tool("tesla_set_seat_heater", {"seat": 1, "level": "3"})
+        )
+        percent_string = tool_json(
+            await client.call_tool("tesla_set_charge_limit", {"percent": "80"})
+        )
+        percent_float = tool_json(
+            await client.call_tool("tesla_set_charge_limit", {"percent": 50.0})
+        )
+        cold = tool_json(
+            await client.call_tool("tesla_set_cabin_temperature", {"driver_celsius": 14.96})
+        )
+        hot = tool_json(
+            await client.call_tool("tesla_set_cabin_temperature", {"driver_celsius": 28.04})
+        )
+        temp_string = tool_json(
+            await client.call_tool("tesla_set_cabin_temperature", {"driver_celsius": "21"})
+        )
+        wheel = tool_json(await client.call_tool("tesla_set_steering_wheel_heat", {"on": 1}))
+        still_ok = tool_json(await client.call_tool("tesla_set_charge_limit", {"percent": 80}))
+    for refused in (
+        seat_bool,
+        level_string,
+        percent_string,
+        percent_float,
+        cold,
+        hot,
+        temp_string,
+        wheel,
+    ):
+        assert refused["ok"] is False
+        assert refused["sent"] is False
+        assert refused["refusal_reason"] == "invalid_input"
+        assert "Nothing was sent" in str(refused["error"])
+        assert "would_send" not in refused
+    assert "14.96" in str(cold["error"])
+    assert "28.04" in str(hot["error"])
+    assert "True" in str(seat_bool["error"])
+    assert _mapping(still_ok["would_send"])["body"] == {"percent": 80}
+
+
+async def test_command_cap_refusal_does_not_wake(tmp_path, monkeypatch):
+    from tesla_commands.budget import CommandDecision
+
+    settings = command_settings(
+        tmp_path,
+        commands_dry_run=False,
+        commands_allowlist=("door_lock",),
+    )
+    seed_token(settings, scopes=COMMAND_SCOPES)
+
+    def deny(self, command: str, vin_masked: str, *, now: object = None) -> CommandDecision:
+        return CommandDecision(False, "daily_cap", 1, 0, 0, 3, None)
+
+    monkeypatch.setattr(CommandBudget, "reserve", deny)
+    mcp = create_server(settings)
+    with respx.mock(assert_all_called=False) as router:
+        stub = FleetAPIStub(router)
+        stub.list_vehicles(vehicle_list(state="asleep"))
+        stub.wake(state="online")
+        _mock_command(router, "door_lock", {"response": {"result": True, "reason": ""}})
+        async with Client(mcp) as client:
+            result = tool_json(await client.call_tool("tesla_door_lock", {}))
+        urls = [str(call.request.url) for call in router.calls]
+    assert result["refusal_reason"] == "daily_cap"
+    assert result["sent"] is False
+    assert result.get("woke") is not True
+    assert urls == []
+
+
+async def test_invalid_timezone_and_corrupt_history_refuse(tmp_path):
+    timezone = command_settings(tmp_path / "zone", timezone="Not/AZone")
+    seed_token(timezone, scopes=COMMAND_SCOPES)
+    mcp = create_server(timezone)
+    with respx.mock(assert_all_called=False) as router:
+        async with Client(mcp) as client:
+            zone_result = tool_json(await client.call_tool("tesla_door_lock", {}))
+        assert router.calls == []
+    assert zone_result["refusal_reason"] == "invalid_timezone"
+    assert zone_result["sent"] is False
+    assert "America/New_York" in str(zone_result["error"])
+    assert "Nothing was sent" in str(zone_result["error"])
+    assert _audit_records(timezone)[-1]["refusal_reason"] == "invalid_timezone"
+
+    broken = command_settings(tmp_path / "broken")
+    broken.history_path.parent.mkdir(parents=True, exist_ok=True)
+    broken.history_path.write_bytes(b"this is not a sqlite database")
+    seed_token(broken, scopes=COMMAND_SCOPES)
+    mcp = create_server(broken)
+    with respx.mock(assert_all_called=False) as router:
+        async with Client(mcp) as client:
+            history_result = tool_json(await client.call_tool("tesla_door_lock", {}))
+        assert router.calls == []
+    assert history_result["refusal_reason"] == "history_unreadable"
+    assert history_result["sent"] is False
+    assert "Nothing was sent" in str(history_result["error"])
+    assert "Traceback" not in str(history_result["error"])
+    assert _audit_records(broken)[-1]["refusal_reason"] == "history_unreadable"
+
+    local = command_settings(tmp_path / "local", timezone="America/New_York")
+    seed_token(local, scopes=COMMAND_SCOPES)
+    mcp = create_server(local)
+    async with Client(mcp) as client:
+        ok = tool_json(await client.call_tool("tesla_door_lock", {}))
+    assert ok["ok"] is True
+    assert ok["dry_run"] is True
+
+
+async def test_not_ready_writes_an_audit_line(monkeypatch, tmp_path):
+    from tesla_commands.execute import perform
+
+    _clear_tesla_env(monkeypatch)
+    monkeypatch.setenv("TESLA_MCP_DATA_DIR", str(tmp_path))
+    selector = f"garage {VIN} bay"
+    result = await perform(None, "door_lock", {"label": selector}, vin_selector=selector)
+    assert result["refusal_reason"] == "not_ready"
+    assert result["sent"] is False
+    assert result["ok"] is False
+    blob = json.dumps(result)
+    assert VIN not in blob
+    assert mask_vin(VIN) in str(result["vehicle"])
+    assert mask_vin(VIN) in str(result["parameters"])
+    text = _audit_text(Settings.load())
+    assert "not_ready" in text
+    assert VIN not in text
+    assert mask_vin(VIN) in text
+
+
+def test_audit_log_masks_a_vin_inside_a_longer_selector(tmp_path):
+    from tesla_commands.audit import AuditLog
+
+    settings = make_settings(tmp_path)
+    secret = "opaque-access-token-value"
+    jwt = "eyJhbGciOiJub25lIn0.eyJzdWIiOiJ4In0.sig"
+    AuditLog(settings).append(
+        {
+            "vehicle": f"garage {VIN} bay",
+            "error": f"denied {secret} {jwt} vin {VIN}",
+        },
+        secrets=(secret,),
+    )
+    text = _audit_text(settings)
+    assert VIN not in text
+    assert secret not in text
+    assert "eyJ" not in text
+    assert mask_vin(VIN) in text
+
+
+def test_proxy_error_text_scrubs_tokens_and_vins():
+    from tesla_commands.proxy import interpret_response
+
+    class Response:
+        status_code = 403
+
+        def json(self) -> dict[str, object]:
+            return {
+                "message": f"vehicle {VIN} rejected Bearer leaked-bearer-token",
+                "error": "eyJhbGciOiJub25lIn0.eyJhIjoxfQ.sig",
+            }
+
+    result = interpret_response(Response())
+    combined = f"{result.message} {result.tesla_reason}"
+    assert VIN not in combined
+    assert "eyJ" not in combined
+    assert "leaked-bearer-token" not in combined
+    assert mask_vin(VIN) in combined
+
+
+async def test_tool_reply_scrubs_tesla_reason_token_and_vin(tmp_path):
+    settings = command_settings(
+        tmp_path,
+        commands_dry_run=False,
+        commands_allowlist=("door_lock",),
+    )
+    token = seed_token(settings, scopes=COMMAND_SCOPES, refresh="refresh-token-test-value")
+    other_jwt = "eyJhbGciOiJub25lIn0.eyJzdWIiOiJvdGhlciJ9.sig"
+    reason = (
+        f"denied {token.access_token} refresh {token.refresh_token} "
+        f"Bearer leaked-bearer-token vehicle {VIN} also {other_jwt}"
+    )
+    mcp = create_server(settings)
+    with respx.mock(assert_all_called=False) as router:
+        FleetAPIStub(router).list_vehicles(vehicle_list(state="online"))
+        _mock_command(router, "door_lock", {"response": {"result": False, "reason": reason}})
+        async with Client(mcp) as client:
+            result = tool_json(await client.call_tool("tesla_door_lock", {"vin": VIN}))
+    blob = json.dumps(result)
+    assert token.access_token not in blob
+    assert token.refresh_token not in blob
+    assert VIN not in blob
+    assert other_jwt not in blob
+    assert "eyJ" not in blob
+    assert "leaked-bearer-token" not in blob
+    assert mask_vin(VIN) in str(result["tesla_reason"])
+    assert mask_vin(VIN) in str(result["error"])
+    assert result["vehicle"] == mask_vin(VIN)
+    text = _audit_text(settings)
+    assert token.access_token not in text
+    assert token.refresh_token not in text
+    assert VIN not in text
+    assert "eyJ" not in text
+    assert "leaked-bearer-token" not in text
+    assert mask_vin(VIN) in text
+
+    dry = command_settings(tmp_path / "selector", commands_allowlist=("door_lock",))
+    seed_token(dry, scopes=COMMAND_SCOPES)
+    selector = f"garage {VIN} bay"
+    mcp = create_server(dry)
+    async with Client(mcp) as client:
+        named = tool_json(await client.call_tool("tesla_door_lock", {"vin": selector}))
+    assert named["vehicle"] == f"garage {mask_vin(VIN)} bay"
+    assert VIN not in json.dumps(named)
+    dry_text = _audit_text(dry)
+    assert VIN not in dry_text
+    assert mask_vin(VIN) in dry_text

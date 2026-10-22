@@ -49,8 +49,9 @@ program, `tesla-commands-mcp`. You add it as its own connector,
 Installing or running `tesla-mcp` does not add those tools and does not
 request `vehicle_cmds`.
 
-Commands stay in dry-run until you set `TESLA_COMMANDS_DRY_RUN=false`, and
-an empty allowlist allows none of them. Read
+Commands stay in dry-run until you set `TESLA_COMMANDS_DRY_RUN=false`
+(`0`, `no`, and `off` also turn it off). A blank or unrecognized value
+stays in dry-run. An empty allowlist allows none of them. Read
 **[docs/COMMANDS.md](docs/COMMANDS.md)** before you turn one on. That page
 covers the risks, the scope, pairing the virtual key, the signing proxy,
 and how to remove the key from the car.

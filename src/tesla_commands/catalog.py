@@ -54,16 +54,6 @@ def _sentry_on(_parameters: dict[str, Any]) -> dict[str, Any]:
     return {"on": True}
 
 
-def _whole_number(value: object) -> int | None:
-    if isinstance(value, bool) or value is None:
-        return None
-    if isinstance(value, int):
-        return value
-    if isinstance(value, float) and math.isfinite(value) and value.is_integer():
-        return int(value)
-    return None
-
-
 def _celsius(value: object, label: str) -> float:
     if isinstance(value, bool) or not isinstance(value, (int, float)):
         raise CommandRefusal(
@@ -77,15 +67,16 @@ def _celsius(value: object, label: str) -> float:
             f"{label} must be a real temperature between "
             f"{MIN_CABIN_C:g} and {MAX_CABIN_C:g} °C. Nothing was sent to the car.",
         )
-    number = round(float(value), 1)
-    if number < MIN_CABIN_C or number > MAX_CABIN_C:
+    # Check the caller's number before rounding. 14.96 must not become 15.0.
+    if value < MIN_CABIN_C or value > MAX_CABIN_C:
+        shown = format(value, "g") if isinstance(value, float) else str(value)
         raise CommandRefusal(
             "invalid_input",
             f"Cabin temperature must be between {MIN_CABIN_C:g} and {MAX_CABIN_C:g} °C, "
             "which is the range the car's climate control accepts. "
-            f"{number:g} is outside that range. Nothing was sent to the car.",
+            f"{shown} is outside that range. Nothing was sent to the car.",
         )
-    return number
+    return round(float(value), 1)
 
 
 def _temps(parameters: dict[str, Any]) -> dict[str, Any]:
@@ -96,23 +87,52 @@ def _temps(parameters: dict[str, Any]) -> dict[str, Any]:
 
 
 def _seat(parameters: dict[str, Any]) -> dict[str, Any]:
-    seat = _whole_number(parameters.get("seat"))
-    level = _whole_number(parameters.get("level"))
-    if seat is None or seat not in SEAT_NAMES:
-        names = ", ".join(f"{index} {name}" for index, name in SEAT_NAMES.items())
-        raise CommandRefusal(
-            "invalid_input",
-            "Seat must be a whole number from 0 to 5 "
-            f"({names}). {parameters.get('seat')!r} is not one of those seats. "
-            "Nothing was sent to the car.",
-        )
-    if level is None or level < MIN_SEAT_LEVEL or level > MAX_SEAT_LEVEL:
-        raise CommandRefusal(
-            "invalid_input",
+    seat = _require_int(
+        parameters.get("seat"),
+        label="Seat",
+        low=0,
+        high=5,
+        out_of_range=_seat_range_message(parameters.get("seat")),
+    )
+    level = _require_int(
+        parameters.get("level"),
+        label="Seat heater level",
+        low=MIN_SEAT_LEVEL,
+        high=MAX_SEAT_LEVEL,
+        out_of_range=(
             "Seat heater level must be a whole number from 0 (off) to 3. "
-            f"{parameters.get('level')!r} is outside that range. Nothing was sent to the car.",
-        )
+            f"{parameters.get('level')!r} is outside that range. Nothing was sent to the car."
+        ),
+    )
     return {"heater": seat, "level": level}
+
+
+def _seat_range_message(value: object) -> str:
+    names = ", ".join(f"{index} {name}" for index, name in SEAT_NAMES.items())
+    return (
+        "Seat must be a whole number from 0 to 5 "
+        f"({names}). {value!r} is not one of those seats. "
+        "Nothing was sent to the car."
+    )
+
+
+def _require_int(
+    value: object,
+    *,
+    label: str,
+    low: int,
+    high: int,
+    out_of_range: str,
+) -> int:
+    if type(value) is not int:
+        raise CommandRefusal(
+            "invalid_input",
+            f"{label} must be a whole number from {low} to {high}. "
+            f"{value!r} is not a whole number. Nothing was sent to the car.",
+        )
+    if value < low or value > high:
+        raise CommandRefusal("invalid_input", out_of_range)
+    return value
 
 
 def _wheel(parameters: dict[str, Any]) -> dict[str, Any]:
@@ -126,16 +146,20 @@ def _wheel(parameters: dict[str, Any]) -> dict[str, Any]:
 
 
 def _charge_limit(parameters: dict[str, Any]) -> dict[str, Any]:
-    percent = _whole_number(parameters.get("percent"))
-    if percent is None or percent < MIN_CHARGE_PERCENT or percent > MAX_CHARGE_PERCENT:
-        raise CommandRefusal(
-            "invalid_input",
+    percent = parameters.get("percent")
+    parsed = _require_int(
+        percent,
+        label="Charge limit",
+        low=MIN_CHARGE_PERCENT,
+        high=MAX_CHARGE_PERCENT,
+        out_of_range=(
             "Charge limit must be a whole number from "
             f"{MIN_CHARGE_PERCENT} to {MAX_CHARGE_PERCENT} percent. "
-            f"{parameters.get('percent')!r} is outside Tesla's allowed range. "
-            "Nothing was sent to the car.",
-        )
-    return {"percent": percent}
+            f"{percent!r} is outside Tesla's allowed range. "
+            "Nothing was sent to the car."
+        ),
+    )
+    return {"percent": parsed}
 
 
 def _spec(

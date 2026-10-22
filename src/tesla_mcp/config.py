@@ -50,7 +50,10 @@ def _int(value: str | None, default: int) -> int:
 
 
 def _bounded_int(value: str | None, default: int, *, name: str, upper: int) -> int:
-    parsed = _int(value, default)
+    try:
+        parsed = _int(value, default)
+    except ValueError:
+        raise ValueError(f"{name} must be a whole number from 0 to {upper}.") from None
     if parsed < 0 or parsed > upper:
         raise ValueError(f"{name} must be a whole number from 0 to {upper}. Got {parsed}.")
     return parsed
@@ -136,6 +139,9 @@ class Settings:
     command_proxy_ca: str | None = None
     command_proxy_insecure: bool = False
     command_proxy_allow_remote: bool = False
+    # Set by the commands server when a command variable is invalid.
+    # The read-only server leaves this empty and does not read those variables.
+    command_config_error: str | None = None
 
     @property
     def fleet_base(self) -> str:
@@ -213,8 +219,9 @@ class Settings:
         interval = max(_int(os.environ.get("TESLA_WAKE_MIN_INTERVAL_SECONDS"), 1800), 0)
         poll_hours = float(os.environ.get("TESLA_POLL_INTERVAL_HOURS", "2"))
         fleet_base = os.environ.get("TESLA_FLEET_API_BASE") or None
-        allow_remote = _bool(os.environ.get("TESLA_COMMAND_PROXY_ALLOW_REMOTE"), False)
-        ca_file = (os.environ.get("TESLA_COMMAND_PROXY_CA") or "").strip()
+        # Command variables (TESLA_ENABLE_COMMANDS, TESLA_COMMANDS_*, TESLA_COMMAND_PROXY_*)
+        # are intentionally not read here. A bad value in the shared config.env must not
+        # stop the read-only server. tesla_commands.config loads them for the commands server.
         return cls(
             client_id=os.environ.get("TESLA_CLIENT_ID", "").strip(),
             client_secret=os.environ.get("TESLA_CLIENT_SECRET", "").strip(),
@@ -232,26 +239,4 @@ class Settings:
             token_url=os.environ.get("TESLA_TOKEN_URL", TOKEN_URL).strip(),
             auth_url=os.environ.get("TESLA_AUTH_URL", AUTHORIZE_URL).strip(),
             timezone=os.environ.get("TESLA_TIMEZONE", "UTC").strip() or "UTC",
-            enable_commands=_bool(os.environ.get("TESLA_ENABLE_COMMANDS"), False),
-            commands_dry_run=_bool(os.environ.get("TESLA_COMMANDS_DRY_RUN"), True),
-            commands_allowlist=_csv(os.environ.get("TESLA_COMMANDS_ALLOWLIST")),
-            commands_daily_cap=_bounded_int(
-                os.environ.get("TESLA_COMMANDS_DAILY_CAP"),
-                DEFAULT_COMMANDS_DAILY_CAP,
-                name="TESLA_COMMANDS_DAILY_CAP",
-                upper=MAX_COMMANDS_DAILY_CAP,
-            ),
-            commands_per_command_daily_cap=_bounded_int(
-                os.environ.get("TESLA_COMMANDS_PER_COMMAND_DAILY_CAP"),
-                DEFAULT_COMMANDS_PER_COMMAND_DAILY_CAP,
-                name="TESLA_COMMANDS_PER_COMMAND_DAILY_CAP",
-                upper=MAX_COMMANDS_PER_COMMAND_DAILY_CAP,
-            ),
-            command_proxy_url=_proxy_url(
-                os.environ.get("TESLA_COMMAND_PROXY_URL"),
-                allow_remote=allow_remote,
-            ),
-            command_proxy_ca=ca_file or None,
-            command_proxy_insecure=_bool(os.environ.get("TESLA_COMMAND_PROXY_INSECURE"), False),
-            command_proxy_allow_remote=allow_remote,
         )

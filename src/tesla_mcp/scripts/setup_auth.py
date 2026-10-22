@@ -55,9 +55,19 @@ def main(argv: list[str] | None = None, *, include_commands: bool = False) -> No
         print(exc.message if isinstance(exc, TeslaAuthError) else exc.message, file=sys.stderr)
         raise SystemExit(1) from exc
 
-    # The read-only wizard passes include_commands=False and never asks for
-    # vehicle_cmds. The commands wizard passes True, and still only asks when
-    # TESLA_ENABLE_COMMANDS is on.
+    # The read-only wizard passes include_commands=False and never reads command
+    # variables. The commands wizard loads them and stops, without a traceback,
+    # when one of them is invalid.
+    if include_commands:
+        from tesla_commands.config import apply_command_environment
+
+        settings = apply_command_environment(settings)
+        if settings.command_config_error:
+            print(settings.command_config_error, file=sys.stderr)
+            raise SystemExit(1)
+
+    # The read-only wizard never asks for vehicle_cmds. The commands wizard
+    # still only asks when TESLA_ENABLE_COMMANDS is on.
     request_commands = include_commands and settings.enable_commands
     if include_commands and not settings.enable_commands:
         print(

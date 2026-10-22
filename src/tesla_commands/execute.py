@@ -1,27 +1,31 @@
 """Decide whether a command may run, then dry-run or send it.
 
 Order: unknown command, master switch, input check, allowlist, OAuth scope,
-daily caps, dry-run, proxy, wake (shared with the read-only wake cap), send.
-Every attempt is appended to the audit log. A dry run does not call Tesla.
+daily caps, dry-run, proxy, reserve a command slot, wake (shared with the
+read-only wake cap), send. The slot is reserved before a wake so a command
+the cap refuses does not wake the car. Every attempt is appended to the
+audit log. A dry run does not call Tesla.
 """
 
 from __future__ import annotations
 
+import sqlite3
 from typing import Any
 
 from fastmcp import Context
 
+from tesla_mcp.config import Settings
 from tesla_mcp.errors import TeslaAuthError, TeslaError
 from tesla_mcp.fleet import FleetClient
 from tesla_mcp.logging_utils import log_event
 from tesla_mcp.pricing import price_for
 from tesla_mcp.runtime import AppRuntime
 from tesla_mcp.scopes import VEHICLE_COMMANDS_SCOPE, scopes_from_access_token
-from tesla_mcp.time_utils import isoformat, utc_now
+from tesla_mcp.time_utils import isoformat, utc_now, zone
 from tesla_mcp.tools.common import require_app, select_vehicle
 from tesla_mcp.vin import mask_path, mask_vin
 
-from .audit import AuditLog, public_parameters, public_selector
+from .audit import AuditLog, public_parameters, public_selector, scrub_text, scrub_value
 from .budget import CommandBudget, CommandDecision
 from .catalog import COMMANDS, CommandSpec, build_body, command_allowed, would_send
 from .errors import CommandRefusal
@@ -43,6 +47,14 @@ _MISSING_SCOPE = (
     "The read-only `tesla-mcp auth` command does not request vehicle_cmds. "
     "Nothing was sent to the car."
 )
+_HISTORY_UNREADABLE = (
+    "The local history file could not be read, so the command was refused. "
+    "Nothing was sent to the car."
+)
+_TIMEZONE_INVALID = (
+    "TESLA_TIMEZONE is not a valid timezone, so the command was refused. "
+    "Use an IANA name such as America/New_York. Nothing was sent to the car."
+)
 
 
 async def perform(
@@ -55,19 +67,23 @@ async def perform(
     try:
         fleet, runtime = await require_app(ctx)
     except TeslaError as exc:
+        message = scrub_text(exc.message)
+        _audit_not_ready(command, parameters, vin_selector, message)
         return {
             "ok": False,
             "sent": False,
             "dry_run": True,
             "command": command,
             "parameters": public_parameters(parameters),
-            "error": exc.message,
+            "vehicle": public_selector(vin_selector),
+            "error": message,
             "error_type": type(exc).__name__,
             "refusal_reason": "not_ready",
         }
     audit = AuditLog(runtime.settings)
-    budget = CommandBudget(runtime.settings)
     try:
+        _refuse_if_unusable(runtime)
+        budget = CommandBudget(runtime.settings)
         return await _perform(
             fleet,
             runtime,
@@ -89,6 +105,19 @@ async def perform(
             result="refused",
             refusal_reason=exc.reason,
             error=exc.message,
+        )
+    except sqlite3.Error:
+        return _finish(
+            runtime,
+            audit,
+            command=command,
+            parameters=parameters,
+            vin_selector=vin_selector,
+            ok=False,
+            sent=False,
+            result="refused",
+            refusal_reason="history_unreadable",
+            error=_HISTORY_UNREADABLE,
         )
 
 
@@ -164,9 +193,28 @@ async def _send_live(
     vin_selector: str | None,
 ) -> dict[str, Any]:
     require_proxy(runtime.settings)
+    # Hold the command slot before any wake. A cap refusal must not wake the car.
+    decision = budget.reserve(spec.name, public_selector(vin_selector))
+    if not decision.allowed:
+        reason, message = _cap_refusal(decision, runtime.settings, spec.name)
+        return _finish(
+            runtime,
+            audit,
+            command=spec.name,
+            parameters=parameters,
+            vin_selector=vin_selector,
+            ok=False,
+            sent=False,
+            result="refused",
+            refusal_reason=reason,
+            error=message,
+            spec=spec,
+        )
+    event_id = decision.event_id
     try:
         vehicle, _all = await select_vehicle(fleet, vin_selector)
     except TeslaError as exc:
+        _release(budget, event_id)
         return _finish(
             runtime,
             audit,
@@ -185,6 +233,7 @@ async def _send_live(
         if vehicle.state != "online":
             woke = await _wake_for_command(fleet, runtime, vehicle)
     except CommandRefusal as exc:
+        _release(budget, event_id)
         return _finish(
             runtime,
             audit,
@@ -201,6 +250,7 @@ async def _send_live(
             spec=spec,
         )
     except TeslaError as exc:
+        _release(budget, event_id)
         return _finish(
             runtime,
             audit,
@@ -218,30 +268,10 @@ async def _send_live(
             spec=spec,
         )
 
-    decision = budget.reserve(spec.name, mask_vin(vehicle.vin))
-    if not decision.allowed:
-        reason, message = _cap_refusal(decision, runtime.settings, spec.name)
-        return _finish(
-            runtime,
-            audit,
-            command=spec.name,
-            parameters=parameters,
-            vin_selector=vin_selector,
-            ok=False,
-            sent=False,
-            result="refused",
-            refusal_reason=reason,
-            error=message,
-            raw_vin=vehicle.vin,
-            woke=woke,
-            spec=spec,
-        )
-    event_id = decision.event_id
     try:
         token = await runtime.tokens.get_access_token()
     except TeslaError as exc:
-        if event_id is not None:
-            budget.release(event_id)
+        _release(budget, event_id)
         return _finish(
             runtime,
             audit,
@@ -267,8 +297,7 @@ async def _send_live(
             body,
         )
     except ProxyTransportError as exc:
-        if event_id is not None:
-            budget.release(event_id)
+        _release(budget, event_id)
         return _finish(
             runtime,
             audit,
@@ -287,8 +316,7 @@ async def _send_live(
             spec=spec,
         )
     except CommandRefusal as exc:
-        if event_id is not None:
-            budget.release(event_id)
+        _release(budget, event_id)
         return _finish(
             runtime,
             audit,
@@ -308,14 +336,19 @@ async def _send_live(
         )
 
     if event_id is not None and not result.billed:
-        budget.release(event_id)
-    runtime.history.record_usage(
-        category="command",
-        endpoint=mask_path(f"/api/1/vehicles/{vehicle.vin}/command/{spec.endpoint}"),
-        http_status=result.http_status,
-        vin_masked=mask_vin(vehicle.vin),
-        estimated_usd=price_for("command", result.http_status),
-    )
+        _release(budget, event_id)
+    try:
+        runtime.history.record_usage(
+            category="command",
+            endpoint=mask_path(f"/api/1/vehicles/{vehicle.vin}/command/{spec.endpoint}"),
+            http_status=result.http_status,
+            vin_masked=mask_vin(vehicle.vin),
+            estimated_usd=price_for("command", result.http_status),
+        )
+    except sqlite3.Error:
+        # The command already reached Tesla. Losing the usage row must not
+        # turn the reply into a claim that nothing was sent.
+        pass
     if not result.ok:
         return _finish(
             runtime,
@@ -404,6 +437,59 @@ def _wake_message(reason: str, runtime: AppRuntime) -> str:
     )
 
 
+def _refuse_if_unusable(runtime: AppRuntime) -> None:
+    """Stop before any Tesla call when local config or history cannot be trusted."""
+    problem = runtime.settings.command_config_error
+    if problem:
+        raise CommandRefusal("invalid_config", problem)
+    if not runtime.history.available:
+        raise CommandRefusal("history_unreadable", _HISTORY_UNREADABLE)
+    try:
+        zone(runtime.settings.timezone)
+    except ValueError:
+        raise CommandRefusal("invalid_timezone", _TIMEZONE_INVALID) from None
+
+
+def _audit_not_ready(
+    command: str,
+    parameters: dict[str, Any],
+    vin_selector: str | None,
+    message: str,
+) -> None:
+    """Write the not_ready refusal. A missing client still leaves an audit line."""
+    try:
+        settings = Settings.load()
+        AuditLog(settings).append(
+            {
+                "timestamp": isoformat(utc_now()),
+                "command": command,
+                "parameters": public_parameters(parameters),
+                "vehicle": public_selector(vin_selector),
+                "vin_masked": "-",
+                "dry_run": True,
+                "live": False,
+                "result": "refused",
+                "refusal_reason": "not_ready",
+                "error": scrub_text(message),
+                "http_status": None,
+                "tesla_reason": None,
+                "would_send": None,
+                "woke": None,
+            }
+        )
+    except (OSError, ValueError, TypeError, TeslaError):
+        return
+
+
+def _release(budget: CommandBudget, event_id: int | None) -> None:
+    if event_id is None:
+        return
+    try:
+        budget.release(event_id)
+    except sqlite3.Error:
+        return
+
+
 def _require_scope(runtime: AppRuntime) -> None:
     try:
         record = runtime.tokens.load()
@@ -462,24 +548,31 @@ def _finish(
     secrets: tuple[str, ...] = (),
     spec: CommandSpec | None = None,
 ) -> dict[str, Any]:
+    known = _secret_values(runtime, secrets)
+    error_text = scrub_text(error, secrets=known) if error else None
+    reason_text = scrub_text(tesla_reason, secrets=known) if tesla_reason else None
+    note_text = scrub_text(note, secrets=known) if note else None
+    parameters_public = public_parameters(parameters, secrets=known)
+    vehicle = public_selector(vin_selector, secrets=known)
+    would_public = scrub_value(would, secrets=known) if would is not None else None
     vin_masked = mask_vin(raw_vin) if raw_vin else "-"
     record: dict[str, Any] = {
         "timestamp": isoformat(utc_now()),
         "command": command,
-        "parameters": public_parameters(parameters),
-        "vehicle": public_selector(vin_selector),
+        "parameters": parameters_public,
+        "vehicle": vehicle,
         "vin_masked": vin_masked,
         "dry_run": runtime.settings.commands_dry_run,
         "live": sent,
         "result": result,
         "refusal_reason": refusal_reason,
-        "error": error,
+        "error": error_text,
         "http_status": http_status,
-        "tesla_reason": tesla_reason,
-        "would_send": would,
+        "tesla_reason": reason_text,
+        "would_send": would_public,
         "woke": woke,
     }
-    audit.append(record, raw_vin=raw_vin, secrets=secrets)
+    audit.append(record, raw_vin=raw_vin, secrets=known)
     tool = spec.tool_name if spec is not None else command
     log_event(tool, raw_vin, result, "command" if sent else None)
     payload: dict[str, Any] = {
@@ -487,25 +580,38 @@ def _finish(
         "sent": sent,
         "dry_run": runtime.settings.commands_dry_run,
         "command": command,
-        "parameters": record["parameters"],
-        "vehicle": record["vehicle"],
+        "parameters": parameters_public,
+        "vehicle": vehicle,
         "vin_masked": vin_masked,
     }
     if refusal_reason:
         payload["refusal_reason"] = refusal_reason
         payload["error_type"] = "refused"
-    if error:
-        payload["error"] = error
+    if error_text:
+        payload["error"] = error_text
         if not refusal_reason:
             payload["error_type"] = error_type or "error"
-    if would is not None:
-        payload["would_send"] = would
-    if note:
-        payload["note"] = note
-    if tesla_reason:
-        payload["tesla_reason"] = tesla_reason
+    if would_public is not None:
+        payload["would_send"] = would_public
+    if note_text:
+        payload["note"] = note_text
+    if reason_text:
+        payload["tesla_reason"] = reason_text
     if woke:
         payload["woke"] = True
     if http_status is not None:
         payload["http_status"] = http_status
     return payload
+
+
+def _secret_values(runtime: AppRuntime, extra: tuple[str, ...]) -> tuple[str, ...]:
+    """Token values to strip from replies. Short strings are left alone."""
+    found: list[str] = [runtime.settings.client_secret, *extra]
+    try:
+        record = runtime.tokens.load()
+    except TeslaError:
+        record = None
+    if record is not None:
+        found.extend([record.access_token, record.refresh_token])
+    unique = {item for item in found if isinstance(item, str) and len(item) >= 12}
+    return tuple(unique)

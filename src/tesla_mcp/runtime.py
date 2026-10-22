@@ -50,7 +50,7 @@ def build_runtime(
     for_commands: bool = False,
 ) -> AppRuntime:
     settings.data_dir.mkdir(parents=True, exist_ok=True)
-    history = HistoryStore(settings.history_path)
+    history = HistoryStore(settings.history_path, required=not for_commands)
     tokens = TokenStore(settings, exchange=exchange)
     record = None
     try:

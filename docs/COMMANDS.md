@@ -71,10 +71,11 @@ command the car.
   on until you have seen the reply you expect.
 - The daily caps below stop a loop from commanding the car all day. They are
   not a substitute for the allowlist.
-- Waking a sleeping car costs money (about $0.02) and uses the same 3-wakes-a-day
-  budget as `tesla_wake_and_refresh`. A command to a car that is already
-  online does not use a wake. If the wake budget is used up, the command is
-  not sent.
+- Waking a sleeping car costs money (about $0.02) and uses the same wake
+  budget as `tesla_wake_and_refresh` (daily cap, minimum gap, and at most 3
+  per minute). A command to a car that is already online does not use a wake.
+  If a wake is refused, the command is not sent. A command the daily command
+  cap refuses does not wake the car either: the command slot is reserved first.
 - A command itself is about $0.001. Set a billing limit in the Tesla
   developer dashboard anyway.
 - After you grant `vehicle_cmds`, the saved token can command the car
@@ -89,7 +90,7 @@ command the car.
 | Variable | Default | Meaning |
 | --- | --- | --- |
 | `TESLA_ENABLE_COMMANDS` | `false` | Master switch. `false` refuses every command. |
-| `TESLA_COMMANDS_DRY_RUN` | `true` | `true` checks the request and returns what would be sent. It does not call Tesla. |
+| `TESLA_COMMANDS_DRY_RUN` | `true` | Checks the request and returns what would be sent. It does not call Tesla. Stays on unless set to `false`, `0`, `no`, or `off`. A blank, whitespace, or unrecognized value stays on. |
 | `TESLA_COMMANDS_ALLOWLIST` | empty | Comma-separated names from the table above. Empty means none are allowed. |
 | `TESLA_COMMANDS_DAILY_CAP` | `10` | Most commands per day, across all names. `0` to `40`. |
 | `TESLA_COMMANDS_PER_COMMAND_DAILY_CAP` | `3` | Most times one command can be sent per day. `0` to `10`. |
@@ -99,10 +100,19 @@ command the car.
 | `TESLA_COMMAND_PROXY_ALLOW_REMOTE` | `false` | Leave false. The access token is sent to the proxy URL, so the proxy must be on this computer. |
 
 A number above the maximum is rejected, so a typo cannot remove the cap.
-The day resets at midnight in `TESLA_TIMEZONE` (default `UTC`).
+The day resets at midnight in `TESLA_TIMEZONE` (default `UTC`). Set
+`TESLA_TIMEZONE=America/New_York`, or another IANA name, so that midnight
+is local midnight instead of midnight UTC. An invalid timezone refuses
+every command. Nothing is sent.
 
-Wakes started by a command count toward `TESLA_WAKE_DAILY_CAP` (default 3),
-the same counter the read-only wake tool uses.
+`tesla-mcp` does not read these variables. A bad command value in the
+shared `config.env` does not stop the read-only server. `tesla-commands-mcp`
+refuses the command and names the variable.
+
+Wakes started by a command count toward the same wake budget as
+`tesla_wake_and_refresh`: `TESLA_WAKE_DAILY_CAP` (default 3), the minimum
+gap, and the hard limit of 3 per minute. A command the command cap refuses
+does not spend a wake.
 
 Copy the variables you need into the process environment or into
 `/workspace/.tesla-mcp/config.env`. Do not commit real secrets.
@@ -331,7 +341,14 @@ is mode `600`. It is append-only.
 
 The log does not contain the access token, the refresh token, the client
 secret, or the full VIN. A VIN is stored the same way the read-only tools
-show it, first three and last four characters.
+show it, first three and last four characters, including a VIN that was
+embedded in a longer vehicle name. Tesla's reason text is stored the same
+way: bearer tokens and JWT-shaped strings are removed, and the saved token
+value is removed, before the line is written. The tool reply is scrubbed
+the same way.
+
+A call that cannot reach a Tesla client (`not_ready`) is still written
+here. Nothing was sent.
 
 `tesla-mcp logout` does not delete this file. Delete it yourself if you
 want the history gone. Deleting it does not revoke the key on the car.
@@ -366,9 +383,12 @@ file should stay out of git and out of chat.
 | Does not include `vehicle_cmds` | Sign in with `tesla-commands-mcp auth`, not `tesla-mcp auth`. |
 | Charge limit, temperature, or seat was refused | The number is outside Tesla's range. Nothing was sent. |
 | Daily cap or per-command cap | The local limit for today is used. It resets at midnight. |
-| Wake budget | The car was asleep and the shared 3-a-day wake cap blocked the wake. The command was not sent. |
+| Wake budget | The car was asleep and a wake was refused: the daily cap, the minimum gap since the last wake, or the hard limit of 3 wakes per minute. The command was not sent. |
+| `not_ready` | The command tool ran without a ready Tesla client. Nothing was sent. The attempt is in the audit log. |
+| Invalid `TESLA_TIMEZONE` or unreadable history file | The command was refused before any call. Nothing was sent. |
+| Invalid command setting | A command variable in the environment is not usable (for example a daily cap above 40, or a proxy URL that is not on this computer). Nothing was sent. The read-only server ignores that variable. |
 | `TESLA_COMMAND_PROXY_URL` is not set | Dry-run is off, but the proxy URL is missing. |
-| Tesla refused the command, followed by Tesla's sentence | The proxy or the car rejected it. Read that sentence. Signing problems name the vehicle command protocol or an unsigned command. |
+| Tesla refused the command, followed by Tesla's sentence | The proxy or the car rejected it. Read that sentence. Tokens and full VINs are removed from it. Signing problems name the vehicle command protocol or an unsigned command. |
 | The proxy could not be reached | `tesla-http-proxy` is not running, or the URL or certificate path is wrong. |
 
 A refused call is still written to the audit log, with the reason.

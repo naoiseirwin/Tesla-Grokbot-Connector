@@ -18,6 +18,7 @@ from tesla_mcp.scopes import VEHICLE_COMMANDS_SCOPE
 from tesla_mcp.server import StdioMiddleware
 
 from .catalog import COMMANDS, unknown_allowlist_entries
+from .config import apply_command_environment
 from .tools import TOOL_FUNCTIONS
 
 
@@ -25,9 +26,10 @@ def create_server(settings: Settings | None = None) -> FastMCP:
     """Build the commands server. Tools are registered even when commands are off.
 
     A call still refuses until TESLA_ENABLE_COMMANDS=true. Dry-run is the default.
+    Passing no settings reads command variables. The read-only server does not.
     """
     configure_logging()
-    loaded = settings or Settings.load()
+    loaded = settings if settings is not None else apply_command_environment(Settings.load())
     runtime = build_runtime(loaded, for_commands=True)
     _log_mode(runtime)
     mcp = FastMCP("Tesla Commands")
@@ -74,6 +76,8 @@ def _log_mode(runtime: Any) -> None:
     else:
         logger.info("vehicle_cmds: missing; commands will be refused until tesla-commands-mcp auth")
     logger.info("commands_allowlist=%s", listed)
+    if settings.command_config_error:
+        logger.warning("commands refused: %s", settings.command_config_error)
     unknown = unknown_allowlist_entries(settings.commands_allowlist)
     if unknown:
         logger.warning(
