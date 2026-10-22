@@ -9,6 +9,7 @@ from fastmcp import Context
 
 from ..errors import TeslaError
 from ..pricing import PRICE_USD, money
+from ..runtime import AppRuntime
 from ..snapshot import data_endpoints, snapshot_from_vehicle_data
 from ..time_utils import as_local, utc_now
 from .common import failure, finish, require_app, select_vehicle, status_dict
@@ -36,7 +37,7 @@ async def tesla_wake_and_refresh(
     try:
         fleet, runtime = await require_app(ctx)
         vehicle, _all = await select_vehicle(fleet, vin)
-        decision = runtime.wakes.check(vehicle.vin)
+        decision = runtime.wakes.reserve(vehicle.vin)
         if not decision.allowed:
             finish("tesla_wake_and_refresh", vehicle.vin, f"denied_{decision.reason}", None)
             summary = runtime.wakes.summary()
@@ -57,11 +58,10 @@ async def tesla_wake_and_refresh(
         try:
             body = await fleet.wake_up(vehicle.vin)
         except TeslaError as exc:
-            if exc.status_code is not None and exc.status_code < 500:
-                runtime.wakes.mark_sent(vehicle.vin)
+            _release_unbilled(runtime, decision.event_id, exc)
             finish("tesla_wake_and_refresh", vehicle.vin, "error", "wake")
             return failure(exc)
-        accounted = runtime.wakes.mark_sent(vehicle.vin)
+        accounted = decision
         response = body.get("response") if isinstance(body.get("response"), dict) else {}
         state = response.get("state") if isinstance(response, dict) else None
         if state != "online":
@@ -135,6 +135,14 @@ async def tesla_usage(ctx: Context | None = None) -> dict[str, Any]:
     except TeslaError as exc:
         finish("tesla_usage", None, "error", None)
         return failure(exc)
+
+
+def _release_unbilled(runtime: AppRuntime, event_id: int | None, exc: TeslaError) -> None:
+    """Keep the reservation when Tesla billed the wake. HTTP 500+ and network errors are free."""
+    if event_id is None:
+        return
+    if exc.status_code is None or exc.status_code >= 500:
+        runtime.wakes.release(event_id)
 
 
 def _budget_message(

@@ -122,7 +122,8 @@ def snapshot_from_vehicle_data(
     )
 
 
-def _coarse_location(body: dict[str, Any]) -> tuple[float | None, float | None]:
+def raw_location(body: dict[str, Any]) -> tuple[float | None, float | None]:
+    """Latitude and longitude from drive_state, then location_data. Not rounded."""
     drive = body.get("drive_state") if isinstance(body.get("drive_state"), dict) else {}
     location = body.get("location_data") if isinstance(body.get("location_data"), dict) else {}
     assert isinstance(drive, dict)
@@ -132,6 +133,13 @@ def _coarse_location(body: dict[str, Any]) -> tuple[float | None, float | None]:
     if lat is None or lon is None:
         lat = _num(location.get("latitude"))
         lon = _num(location.get("longitude"))
+    if lat is None or lon is None:
+        return None, None
+    return lat, lon
+
+
+def _coarse_location(body: dict[str, Any]) -> tuple[float | None, float | None]:
+    lat, lon = raw_location(body)
     if lat is None or lon is None:
         return None, None
     return coarse_coordinate(lat), coarse_coordinate(lon)

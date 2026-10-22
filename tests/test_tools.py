@@ -157,6 +157,68 @@ async def test_location_is_coarse_by_default_and_logs_omit_coordinates(tmp_path,
     assert stored.latitude == 53.35
 
 
+async def test_cached_location_survives_a_later_snapshot_without_coordinates(tmp_path):
+    settings = make_settings(tmp_path, enable_location=True)
+    seed_token(settings, scopes=[*SCOPES, "vehicle_location"])
+    history = HistoryStore(settings.history_path)
+    history.add_snapshot(
+        Snapshot(
+            vin=VIN,
+            recorded_at=utc_now() - timedelta(hours=2),
+            state="online",
+            live=True,
+            source="location",
+            battery_level=70,
+            latitude=53.35,
+            longitude=-6.26,
+        )
+    )
+    history.add_snapshot(
+        Snapshot(
+            vin=VIN,
+            recorded_at=utc_now() - timedelta(hours=1),
+            state="online",
+            live=True,
+            source="status",
+            battery_level=68,
+        )
+    )
+    mcp = create_server(settings)
+    with respx.mock(assert_all_called=False) as router:
+        FleetAPIStub(router).list_vehicles(vehicle_list(state="asleep"))
+        async with Client(mcp) as client:
+            payload = tool_json(await client.call_tool("tesla_get_location", {}))
+        assert not any("vehicle_data" in str(call.request.url) for call in router.calls)
+    assert payload["precision"] == "coarse"
+    assert payload["latitude"] == 53.35
+    assert payload["longitude"] == -6.26
+
+
+async def test_precise_location_reads_location_data_without_storing_it(tmp_path):
+    settings = make_settings(tmp_path, enable_location=True)
+    seed_token(settings, scopes=[*SCOPES, "vehicle_location"])
+    mcp = create_server(settings)
+    payload_body = vehicle_data(latitude=53.3498, longitude=-6.2603)
+    response = payload_body["response"]
+    assert isinstance(response, dict)
+    response.pop("drive_state")
+    response["location_data"] = {"latitude": "53.3498", "longitude": "-6.2603"}
+    with respx.mock(assert_all_called=False) as router:
+        stub = FleetAPIStub(router)
+        stub.list_vehicles()
+        stub.vehicle_data(payload_body)
+        async with Client(mcp) as client:
+            precise = tool_json(
+                await client.call_tool("tesla_get_location", {"precision": "precise"})
+            )
+    assert precise["latitude"] == pytest.approx(53.3498)
+    assert precise["longitude"] == pytest.approx(-6.2603)
+    stored = HistoryStore(settings.history_path).latest_location(VIN)
+    assert stored is not None
+    assert stored.latitude == 53.35
+    assert stored.longitude == -6.26
+
+
 async def test_charging_summary_does_not_call_tesla_when_disabled(tmp_path):
     settings = make_settings(tmp_path, enable_charging_history=False)
     seed_token(settings)

@@ -6,8 +6,11 @@ from typing import Any
 
 import httpx
 
+from .logging_utils import redact
+
 
 def error_code(response: httpx.Response) -> str:
+    """Short Tesla error code for messages. Not the raw body."""
     try:
         body: Any = response.json()
     except (ValueError, UnicodeError):
@@ -15,12 +18,17 @@ def error_code(response: httpx.Response) -> str:
     if not isinstance(body, dict):
         return ""
     error = body.get("error")
+    text = ""
     if isinstance(error, str):
-        return error
-    if isinstance(error, dict):
-        message = error.get("message") or error.get("code") or ""
-        return str(message)
-    description = body.get("error_description")
-    if isinstance(description, str):
-        return description
-    return ""
+        text = error
+    elif isinstance(error, dict):
+        message = error.get("code") or error.get("message") or ""
+        text = str(message)
+    else:
+        description = body.get("error_description")
+        if isinstance(description, str):
+            text = description
+    cleaned = redact(" ".join(text.split()))
+    if len(cleaned) > 120:
+        return cleaned[:120]
+    return cleaned

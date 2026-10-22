@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import os
 import sqlite3
+from collections.abc import Iterator
+from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
@@ -183,9 +185,43 @@ class HistoryStore:
         return [str(row["vin"]) for row in rows]
 
     def latest(self, vin: str) -> Snapshot | None:
+        """Newest snapshot that has vehicle data, else the newest state-only row.
+
+        Asleep polls store a newer row with no battery or location. That row must
+        not hide the last real snapshot from status, reports, or the cache.
+        """
         with self._connect() as conn:
             row = conn.execute(
-                "SELECT * FROM snapshots WHERE vin = ? ORDER BY recorded_at DESC, id DESC LIMIT 1",
+                f"""
+                SELECT * FROM snapshots
+                WHERE vin = ? AND ({_TELEMETRY_PRESENT})
+                ORDER BY recorded_at DESC, id DESC
+                LIMIT 1
+                """,
+                (vin,),
+            ).fetchone()
+            if row is None:
+                row = conn.execute(
+                    """
+                    SELECT * FROM snapshots
+                    WHERE vin = ?
+                    ORDER BY recorded_at DESC, id DESC
+                    LIMIT 1
+                    """,
+                    (vin,),
+                ).fetchone()
+        return _row_to_snapshot(row) if row is not None else None
+
+    def latest_location(self, vin: str) -> Snapshot | None:
+        """Newest snapshot that actually stored coordinates."""
+        with self._connect() as conn:
+            row = conn.execute(
+                """
+                SELECT * FROM snapshots
+                WHERE vin = ? AND latitude IS NOT NULL AND longitude IS NOT NULL
+                ORDER BY recorded_at DESC, id DESC
+                LIMIT 1
+                """,
                 (vin,),
             ).fetchone()
         return _row_to_snapshot(row) if row is not None else None
@@ -252,18 +288,81 @@ class HistoryStore:
 
     def record_wake(self, *, vin_masked: str, outcome: str, recorded_at: datetime) -> None:
         with self._connect() as conn:
-            conn.execute(
-                "INSERT INTO wake_events (recorded_at, vin_masked, outcome) VALUES (?, ?, ?)",
-                (isoformat(recorded_at), vin_masked, outcome),
-            )
+            _insert_wake(conn, vin_masked=vin_masked, outcome=outcome, recorded_at=recorded_at)
+
+    def delete_wake(self, event_id: int) -> None:
+        with self._connect() as conn:
+            conn.execute("DELETE FROM wake_events WHERE id = ?", (event_id,))
+
+    def insert_wake(
+        self,
+        conn: sqlite3.Connection,
+        *,
+        vin_masked: str,
+        outcome: str,
+        recorded_at: datetime,
+    ) -> int:
+        return _insert_wake(conn, vin_masked=vin_masked, outcome=outcome, recorded_at=recorded_at)
+
+    def read_wake_times(self, conn: sqlite3.Connection, *, outcome: str = "sent") -> list[datetime]:
+        return _wake_times(conn, outcome=outcome)
 
     def wake_times(self, *, outcome: str = "sent") -> list[datetime]:
         with self._connect() as conn:
-            rows = conn.execute(
-                "SELECT recorded_at FROM wake_events WHERE outcome = ? ORDER BY recorded_at ASC",
-                (outcome,),
-            ).fetchall()
-        return [parse_iso(str(row["recorded_at"])) for row in rows]
+            return _wake_times(conn, outcome=outcome)
+
+    @contextmanager
+    def immediate(self) -> Iterator[sqlite3.Connection]:
+        """Exclusive write transaction. Commits before the caller does any network I/O."""
+        conn = sqlite3.connect(self.path, isolation_level=None)
+        conn.row_factory = sqlite3.Row
+        conn.execute("BEGIN IMMEDIATE")
+        try:
+            yield conn
+        except Exception:
+            conn.execute("ROLLBACK")
+            raise
+        else:
+            conn.execute("COMMIT")
+        finally:
+            conn.close()
+
+
+_TELEMETRY_PRESENT = """
+battery_level IS NOT NULL
+OR battery_range_mi IS NOT NULL
+OR est_battery_range_mi IS NOT NULL
+OR odometer_mi IS NOT NULL
+OR inside_temp_c IS NOT NULL
+OR outside_temp_c IS NOT NULL
+OR software_version IS NOT NULL
+OR charging_state IS NOT NULL
+OR latitude IS NOT NULL
+"""
+
+
+def _insert_wake(
+    conn: sqlite3.Connection,
+    *,
+    vin_masked: str,
+    outcome: str,
+    recorded_at: datetime,
+) -> int:
+    cursor = conn.execute(
+        "INSERT INTO wake_events (recorded_at, vin_masked, outcome) VALUES (?, ?, ?)",
+        (isoformat(recorded_at), vin_masked, outcome),
+    )
+    if cursor.lastrowid is None:
+        raise RuntimeError("Wake row did not receive an id.")
+    return int(cursor.lastrowid)
+
+
+def _wake_times(conn: sqlite3.Connection, *, outcome: str) -> list[datetime]:
+    rows = conn.execute(
+        "SELECT recorded_at FROM wake_events WHERE outcome = ? ORDER BY recorded_at ASC",
+        (outcome,),
+    ).fetchall()
+    return [parse_iso(str(row["recorded_at"])) for row in rows]
 
 
 def _row_to_snapshot(row: sqlite3.Row) -> Snapshot:

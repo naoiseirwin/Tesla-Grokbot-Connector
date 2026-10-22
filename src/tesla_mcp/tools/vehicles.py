@@ -8,7 +8,7 @@ from fastmcp import Context
 
 from ..errors import TeslaError
 from ..reports import weekly_mileage
-from ..snapshot import data_endpoints, snapshot_from_vehicle_data
+from ..snapshot import data_endpoints, raw_location, snapshot_from_vehicle_data
 from ..time_utils import isoformat, period_window, utc_now
 from ..vin import mask_vin
 from .common import failure, finish, live_or_cached, require_app, select_vehicle, status_dict
@@ -178,7 +178,7 @@ async def tesla_get_location(
             raise TeslaError("precision must be coarse or precise.")
         vehicle, _all = await select_vehicle(fleet, vin)
         if vehicle.state != "online":
-            cached = runtime.history.latest(vehicle.vin)
+            cached = runtime.history.latest_location(vehicle.vin)
             finish("tesla_get_location", vehicle.vin, "cached", "data")
             return _location_payload(
                 vehicle_vin=vehicle.vin,
@@ -288,14 +288,4 @@ def _precise_location(payload: dict[str, Any]) -> tuple[float | None, float | No
     body = payload.get("response") if isinstance(payload.get("response"), dict) else payload
     if not isinstance(body, dict):
         return None, None
-    drive = body.get("drive_state") if isinstance(body.get("drive_state"), dict) else {}
-    assert isinstance(drive, dict)
-    lat = drive.get("latitude")
-    lon = drive.get("longitude")
-    if (
-        isinstance(lat, (int, float))
-        and isinstance(lon, (int, float))
-        and not isinstance(lat, bool)
-    ):
-        return float(lat), float(lon)
-    return None, None
+    return raw_location(body)

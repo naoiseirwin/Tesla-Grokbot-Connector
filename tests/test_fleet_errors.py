@@ -157,6 +157,18 @@ async def test_wake_is_refused_when_the_client_disables_it(tmp_path):
     assert route.called is False
 
 
+async def test_wake_429_is_not_retried(tmp_path):
+    runtime = _runtime(tmp_path)
+    with respx.mock(assert_all_called=False) as router:
+        route = router.post(url__regex=r".*/wake_up").mock(
+            return_value=httpx.Response(429, headers={"Retry-After": "1"})
+        )
+        async with FleetClient(runtime, allow_wake=True) as fleet:
+            with pytest.raises(TeslaRateLimitError, match="not sent again"):
+                await fleet.wake_up("5YJ3E1EA7KF000001")
+    assert route.call_count == 1
+
+
 async def test_http_500_is_not_priced(tmp_path):
     runtime = _runtime(tmp_path)
     with respx.mock(assert_all_called=False) as router:
