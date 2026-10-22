@@ -115,12 +115,22 @@ about $86 a day. This server defaults to **3 wakes a day** and **1 wake per
 | `tesla_wake_and_refresh` | Fresh snapshot. Requires `confirm=true`. Budget-gated. |
 | `tesla_usage` | Calls this month, estimated USD, wake budget |
 | `tesla_get_location` | Opt-in. Coarse (~1 km) unless `precision=precise`. |
-| `tesla_get_charging_history` | Opt-in. Sessions from the charging history API. |
+| `tesla_get_charging_history` | Opt-in. Charging sessions. Optional `start` and `end`; ranges over a year are split. |
 
 `vin` is optional when the account has one car. Pass a display name or the
 masked VIN when there are several. Distances from the Fleet API are miles.
 Temperatures are Celsius. Every tool is marked read-only. `tesla_wake_and_refresh`
 is also marked non-idempotent because it costs money and wakes the car.
+
+`tesla_get_charging_history` accepts a date (`YYYY-MM-DD`) or an ISO 8601 time
+for `start` and `end`. Leave both out for the last 365 days. A date-only start
+is midnight UTC, and a date-only end is 23:59:59 UTC. Tesla rejects a single
+request longer than one year (`Date range cannot exceed 1 year`), so a longer
+range is loaded in consecutive windows of at most 365 days, up to 10 years.
+Duplicate sessions are dropped and the newest session is returned first. The
+`start` and `end` in the reply are the UTC times that were queried. When Tesla
+rejects a request, the reply includes Tesla's explanation rather than only the
+HTTP status.
 
 ## Scopes
 
@@ -160,7 +170,8 @@ Example routines, all of them using the last snapshot rather than a wake:
   when the car is unplugged. If the snapshot is older than 6 hours, the report
   says so.
 - **Charging summary (1st of the month):** only after the charging-history
-  opt-in. Compares the previous month with the one before it.
+  opt-in. Compares the previous month with the one before it. If Tesla
+  rejects the request, the reply includes Tesla's explanation.
 
 ## Sign-in and token file
 

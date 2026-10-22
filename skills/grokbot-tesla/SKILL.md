@@ -92,6 +92,11 @@ be named like an official Tesla product (example: "GrokBot Vehicle Bridge").
   in a wake.
 - Low charge at 21:00 uses `tesla_report` type `low_charge` and the last
   snapshot only.
+- `tesla_get_charging_history` is opt-in. `start` and `end` can be `YYYY-MM-DD`
+  or ISO 8601. Omit them for the last 365 days. A range longer than a year is
+  fetched in consecutive 365-day windows, up to 10 years. It does not wake the
+  car and it does not start or stop charging. A Tesla rejection includes
+  Tesla's explanation.
 
 ## Shared computer
 

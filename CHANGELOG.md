@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased
+
+- `tesla_get_charging_history` accepts a date or an ISO 8601 time, defaults to the last 365 days, and loads ranges longer than a year in consecutive 365-day windows (up to 10 years). A rejected Tesla request includes Tesla's explanation.
+
 ## 0.1.0
 
 First read-only release.

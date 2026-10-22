@@ -20,11 +20,12 @@ from .errors import (
     TeslaRateLimitError,
     TeslaRegionError,
 )
-from .http_util import error_code
+from .http_util import error_code, safe_error_message
 from .logging_utils import log_event
 from .pricing import price_for
 from .runtime import AppRuntime
 from .snapshot import ALLOWED_DATA_ENDPOINTS
+from .time_utils import charging_history_bounds, charging_history_windows, isoformat, utc_now
 from .vehicles import Vehicle, parse_vehicle, parse_vehicle_list
 from .vin import mask_path, mask_vin
 
@@ -106,15 +107,51 @@ class FleetClient:
             raise TeslaError("wake_up is disabled for this client.")
         return await self._request("POST", f"{_vehicle_path(vin)}/wake_up", vin=vin)
 
-    async def charging_history(self, vin: str, start: str, end: str) -> list[dict[str, Any]]:
+    async def charging_history(
+        self,
+        vin: str,
+        start: str | None = None,
+        end: str | None = None,
+    ) -> list[dict[str, Any]]:
+        """Charging sessions in the range, newest first.
+
+        `start` and `end` are a date (YYYY-MM-DD) or ISO 8601. Omitted end is
+        now. Omitted start is 365 days before end. A range over 365 days is
+        requested as consecutive windows because Tesla rejects a query longer
+        than one year. Sessions that show up in two windows are kept once.
+        """
         if not self.runtime.settings.enable_charging_history:
             raise TeslaError(
                 "Charging history is off. It needs vehicle_charging_cmds, which also covers "
                 "charge control at Tesla's API. This server does not call charge control. "
                 "Set TESLA_ENABLE_CHARGING_HISTORY=true and run `tesla-mcp auth` again to opt in."
             )
+        try:
+            start_at, end_at = charging_history_bounds(start, end, now=utc_now())
+            windows = charging_history_windows(start_at, end_at)
+        except ValueError as exc:
+            raise TeslaError(str(exc)) from exc
         sessions: list[dict[str, Any]] = []
         seen: set[tuple[object, ...]] = set()
+        for window_start, window_end in windows:
+            await self._collect_charging_window(
+                vin,
+                isoformat(window_start),
+                isoformat(window_end),
+                sessions,
+                seen,
+            )
+        sessions.sort(key=_session_sort_key, reverse=True)
+        return sessions
+
+    async def _collect_charging_window(
+        self,
+        vin: str,
+        start: str,
+        end: str,
+        sessions: list[dict[str, Any]],
+        seen: set[tuple[object, ...]],
+    ) -> None:
         for page in range(1, 21):
             payload = await self._request(
                 "GET",
@@ -147,7 +184,6 @@ class FleetClient:
                 fresh += 1
             if fresh == 0 or len(rows) < 50:
                 break
-        return sessions
 
     async def _request(
         self,
@@ -283,7 +319,17 @@ class FleetClient:
                 retry_after=delay,
             )
         if response.status_code >= 400:
-            detail = f" ({code})" if code else ""
+            detail = ""
+            # 4xx bodies sometimes carry a short `message` (for example
+            # "Date range cannot exceed 1 year"). 5xx text is left off.
+            if response.status_code < 500:
+                message = safe_error_message(response)
+                if message:
+                    detail = f": {message}"
+                elif code:
+                    detail = f" ({code})"
+            elif code:
+                detail = f" ({code})"
             raise TeslaError(
                 f"Tesla Fleet API HTTP {response.status_code}{detail}.",
                 response.status_code,
@@ -298,6 +344,11 @@ class FleetClient:
         if not isinstance(body, dict):
             raise TeslaError("Tesla returned an unexpected response.", response.status_code)
         return body
+
+
+def _session_sort_key(session: dict[str, Any]) -> str:
+    start = session.get("start")
+    return start if isinstance(start, str) else ""
 
 
 def _vehicle_path(vin: str) -> str:
