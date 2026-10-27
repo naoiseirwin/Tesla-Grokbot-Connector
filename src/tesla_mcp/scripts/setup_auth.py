@@ -126,8 +126,9 @@ def main(argv: list[str] | None = None, *, include_commands: bool = False) -> No
         )
     elif request_commands:
         print(
-            "vehicle_cmds is granted. Commands stay in dry-run until "
-            "TESLA_COMMANDS_DRY_RUN=false. Read docs/COMMANDS.md before that."
+            "vehicle_cmds is granted. Commands stay in dry-run unless "
+            "TESLA_COMMANDS_DRY_RUN is false, 0, no, or off. "
+            "Read docs/COMMANDS.md before that."
         )
     print("Next: add the stdio command in Grok Bot. See README.")
 

@@ -49,9 +49,9 @@ program, `tesla-commands-mcp`. You add it as its own connector,
 Installing or running `tesla-mcp` does not add those tools and does not
 request `vehicle_cmds`.
 
-Commands stay in dry-run until you set `TESLA_COMMANDS_DRY_RUN=false`
-(`0`, `no`, and `off` also turn it off). A blank or unrecognized value
-stays in dry-run. An empty allowlist allows none of them. Read
+Commands stay in dry-run until `TESLA_COMMANDS_DRY_RUN` is `false`, `0`,
+`no`, or `off`. Those are the only values that turn it off. A blank or
+unrecognized value stays in dry-run. An empty allowlist allows none of them. Read
 **[docs/COMMANDS.md](docs/COMMANDS.md)** before you turn one on. That page
 covers the risks, the scope, pairing the virtual key, the signing proxy,
 and how to remove the key from the car.
@@ -115,8 +115,10 @@ $0, and an app with no payment method is disabled. Alerts arrive at 80% and
 Europe, including IE and GB.
 
 Wakes are also capped by Tesla at **3 per minute**. A loop at that cap is
-about $86 a day. This server defaults to **3 wakes a day** and **1 wake per
-30 minutes**, and it will not let you configure more than 3 per minute.
+about $86 a day. This server defaults to **3 wakes in a rolling 24-hour
+window** and **1 wake per 30 minutes**. It will not let you configure more
+than 3 per minute, more than 10 wakes in that window, or a minimum gap
+longer than 24 hours.
 
 `tesla_usage` shows the local estimate. It is not Tesla's invoice.
 
@@ -174,7 +176,7 @@ Changing scopes needs `tesla-mcp auth` again (`prompt_missing_scopes` is set).
 Ask the Bot to run this every 1–2 hours:
 
 ```bash
-uv run --directory /workspace/tesla-grokbot-connector tesla-mcp poll
+uv run --frozen --directory /workspace/tesla-grokbot-connector tesla-mcp poll
 ```
 
 `tesla-mcp poll --loop` stays in the foreground. Intervals under 1 hour are
@@ -200,8 +202,16 @@ Example routines, all of them using the last snapshot rather than a wake:
 | Data directory on the Grok Bot computer | `/workspace/.tesla-mcp/` |
 | Encrypted tokens | `/workspace/.tesla-mcp/tokens.json.enc` (mode 600) |
 | History | `/workspace/.tesla-mcp/history.db` (mode 600) |
-| Config | `/workspace/.tesla-mcp/config.env` or the process environment |
+| Config | Process environment, `TESLA_MCP_CONFIG`, or `/workspace/.tesla-mcp/config.env` |
 | Override | `TESLA_MCP_DATA_DIR` |
+
+A `.env` file in the working directory is not loaded. `TESLA_FLEET_API_BASE`,
+`TESLA_TOKEN_URL`, and `TESLA_AUTH_URL`, when set, must be the exact `https`
+endpoint for that setting and `TESLA_REGION`, on port 443. The Fleet host is
+`fleet-api.prd.na.vn.cloud.tesla.com`, `fleet-api.prd.eu.vn.cloud.tesla.com`,
+or, only when the region is `cn`, `fleet-api.prd.cn.vn.cloud.tesla.cn`. Token
+and sign-in stay `fleet-auth.prd.vn.cloud.tesla.com` and `auth.tesla.com` in
+every region. Other hosts are refused at startup.
 
 Client id and secret come from a secret-request or from `config.env`. The AES
 key comes from `TESLA_TOKEN_KEY` and is not written into the token file.
@@ -237,7 +247,7 @@ See [SECURITY.md](SECURITY.md).
 ## Development
 
 ```bash
-uv sync
+uv sync --locked
 make test
 make lint
 ```

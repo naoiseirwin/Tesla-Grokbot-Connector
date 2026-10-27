@@ -58,7 +58,8 @@ Install **on the Grok Bot cloud computer**, not on your laptop. Checkout path:
 git clone https://github.com/naoiseirwin/Tesla-Grokbot-Connector.git /workspace/tesla-grokbot-connector
 ```
 
-Later steps use `uv run --directory /workspace/tesla-grokbot-connector …`.
+Later steps use `uv run --frozen --directory /workspace/tesla-grokbot-connector …`.
+`--frozen` keeps the lockfile in force so a run does not upgrade dependencies.
 
 `uvx` form, after the repo is public:
 
@@ -93,13 +94,16 @@ Do one of these on the computer:
   chmod 600 /workspace/.tesla-mcp/config.env
   ```
 
-The shape is [.env.example](.env.example). Placeholders only.
+The shape is [.env.example](.env.example). Placeholders only. Config is the
+process environment, `TESLA_MCP_CONFIG`, or that `config.env` file. A `.env`
+in the working directory is not read. Fleet, token, and authorize URL
+overrides must be the exact `https` endpoint for that setting and region.
 
 Generate a key on a private terminal if you need one. Do not paste it into
 chat:
 
 ```bash
-uv run --directory /workspace/tesla-grokbot-connector tesla-mcp gen-key
+uv run --frozen --directory /workspace/tesla-grokbot-connector tesla-mcp gen-key
 ```
 
 Set `TESLA_REGION` to `na`, `eu`, or `cn`.
@@ -118,7 +122,7 @@ Leave it unset unless you have decided the grant is acceptable.
 ## 4. Authorize: `tesla-mcp auth`
 
 ```bash
-uv run --directory /workspace/tesla-grokbot-connector tesla-mcp auth
+uv run --frozen --directory /workspace/tesla-grokbot-connector tesla-mcp auth
 ```
 
 What happens:
@@ -135,7 +139,7 @@ Paste fallback, if localhost is not an allowed redirect. Host
 domain, set `TESLA_REDIRECT_URI` to that URL, then:
 
 ```bash
-uv run --directory /workspace/tesla-grokbot-connector tesla-mcp auth --paste
+uv run --frozen --directory /workspace/tesla-grokbot-connector tesla-mcp auth --paste
 ```
 
 Paste the code into **this terminal**, not into chat. The code is short-lived.
@@ -151,7 +155,7 @@ is between Cursor users, not between your Bots.
 
 Do **not** open Add-connector / Plugins. In Grok Bot chat, send:
 
-> Add a custom MCP server called tesla that runs: `uv run --directory /workspace/tesla-grokbot-connector tesla-mcp`
+> Add a custom MCP server called tesla that runs: `uv run --frozen --directory /workspace/tesla-grokbot-connector tesla-mcp`
 
 `uvx`:
 
@@ -168,7 +172,7 @@ stays in the environment.
 | --- | --- |
 | Name | `tesla` |
 | Transport | stdio command on the Grok Bot computer |
-| Command (checkout) | `uv run --directory /workspace/tesla-grokbot-connector tesla-mcp` |
+| Command (checkout) | `uv run --frozen --directory /workspace/tesla-grokbot-connector tesla-mcp` |
 | Command (uvx) | `uvx --from git+https://github.com/naoiseirwin/Tesla-Grokbot-Connector tesla-mcp` |
 
 ## 6. Attach with `@` and ask
@@ -185,7 +189,7 @@ mean it. The Bot must pass `confirm=true` to `tesla_wake_and_refresh`.
 Optional poll, every 1–2 hours, no wake:
 
 ```bash
-uv run --directory /workspace/tesla-grokbot-connector tesla-mcp poll
+uv run --frozen --directory /workspace/tesla-grokbot-connector tesla-mcp poll
 ```
 
 After a month of polling, `tesla_usage` should still show a wake count of 0
@@ -205,6 +209,9 @@ unless you asked for a wake.
 - Do **not** enable `vehicle_cmds` for the read-only `tesla` connector.
   That scope is only for the optional commands program, which is off by
   default. See [docs/COMMANDS.md](docs/COMMANDS.md).
+- Dry-run on the commands connector turns off **only** when
+  `TESLA_COMMANDS_DRY_RUN` is `false`, `0`, `no`, or `off`. A blank or any
+  other value stays in dry-run.
 - Do **not** commit `.env`, `*.pem`, or `/workspace/.tesla-mcp/`.
 
 ## 8. Revoke / uninstall
@@ -215,7 +222,7 @@ unless you asked for a wake.
 2. On the computer:
 
    ```bash
-   uv run --directory /workspace/tesla-grokbot-connector tesla-mcp logout --delete-history
+   uv run --frozen --directory /workspace/tesla-grokbot-connector tesla-mcp logout --delete-history
    ```
 
 3. Remove the custom MCP server named `tesla` from Grok Bot if you added one.

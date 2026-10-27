@@ -1,7 +1,8 @@
-"""Per-command and overall daily caps.
+"""Per-command and overall caps for a rolling 24-hour window.
 
-Counts live sends only. A dry run does not consume a slot. Refusals do not
-either. The rows live in the same SQLite file as the wake budget.
+Counts live sends and unknown outcomes. A dry run does not consume a slot.
+Refusals do not either. The rows live in the same SQLite file as the wake budget.
+The cap numbers are the TESLA_COMMANDS_*_DAILY_CAP settings.
 """
 
 from __future__ import annotations
@@ -15,7 +16,7 @@ from datetime import datetime
 from pathlib import Path
 
 from tesla_mcp.config import Settings
-from tesla_mcp.time_utils import isoformat, local_day_start, utc_now
+from tesla_mcp.time_utils import budget_window_start, isoformat, utc_now
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS command_events (
@@ -61,7 +62,11 @@ class CommandBudget:
         *,
         now: datetime | None = None,
     ) -> CommandDecision:
-        """Count the command before the proxy call. Release it if Tesla did not bill it."""
+        """Count the command before the proxy call.
+
+        Release the row only when the request provably never left. An unknown
+        outcome (timeout or HTTP 5xx after send) keeps the row.
+        """
         moment = now or utc_now()
         with self._immediate() as conn:
             decision = self._decide(conn, command, moment)
@@ -97,7 +102,7 @@ class CommandBudget:
         command: str,
         moment: datetime,
     ) -> CommandDecision:
-        start = local_day_start(moment, self.settings.timezone)
+        start = budget_window_start(moment)
         rows = conn.execute(
             """
             SELECT command FROM command_events
@@ -136,10 +141,20 @@ class CommandBudget:
             command_remaining,
         )
 
-    def _connect(self) -> sqlite3.Connection:
+    @contextmanager
+    def _connect(self) -> Iterator[sqlite3.Connection]:
+        """Open a connection and close it. sqlite3's context manager does not."""
         conn = sqlite3.connect(self.path)
         conn.row_factory = sqlite3.Row
-        return conn
+        try:
+            yield conn
+        except Exception:
+            conn.rollback()
+            raise
+        else:
+            conn.commit()
+        finally:
+            conn.close()
 
     @contextmanager
     def _immediate(self) -> Iterator[sqlite3.Connection]:

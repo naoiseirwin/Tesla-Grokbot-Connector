@@ -55,7 +55,7 @@ be named like an official Tesla product (example: "GrokBot Vehicle Bridge").
    `cn`). Then:
 
    ```bash
-   uv run --directory /workspace/tesla-grokbot-connector tesla-mcp auth
+   uv run --frozen --directory /workspace/tesla-grokbot-connector tesla-mcp auth
    ```
 
    A browser on **this computer** opens. Tell the user to Take over if Tesla
@@ -65,7 +65,7 @@ be named like an official Tesla product (example: "GrokBot Vehicle Bridge").
 4. Ask the user to send this chat message (or send it yourself as the add
    request and wait for their confirmation):
 
-   > Add a custom MCP server called tesla that runs: `uv run --directory /workspace/tesla-grokbot-connector tesla-mcp`
+   > Add a custom MCP server called tesla that runs: `uv run --frozen --directory /workspace/tesla-grokbot-connector tesla-mcp`
 
 5. Repeat the **name**, **command**, and **args**. Wait for them to click
    Add it.
@@ -79,7 +79,7 @@ be named like an official Tesla product (example: "GrokBot Vehicle Bridge").
 | --- | --- |
 | Name | `tesla` |
 | Transport | stdio command on the Grok Bot computer |
-| Command | `uv` `run` `--directory` `/workspace/tesla-grokbot-connector` `tesla-mcp` |
+| Command | `uv` `run` `--frozen` `--directory` `/workspace/tesla-grokbot-connector` `tesla-mcp` |
 | Token file | `/workspace/.tesla-mcp/tokens.json.enc` |
 | Default scopes | `openid offline_access vehicle_device_data` |
 
@@ -87,7 +87,8 @@ be named like an official Tesla product (example: "GrokBot Vehicle Bridge").
 
 - Status, climate, odometer, software, history, and reports do not wake the car.
 - `tesla_wake_and_refresh` needs `confirm=true`. The default budget is 3 wakes
-  a day and one every 30 minutes. Do not retry in a loop when the budget says no.
+  in any rolling 24-hour window and one every 30 minutes. Do not retry in a
+  loop when the budget says no.
 - A scheduled poll is `tesla-mcp poll` every 1–2 hours. It must not be wrapped
   in a wake.
 - Low charge at 21:00 uses `tesla_report` type `low_charge` and the last

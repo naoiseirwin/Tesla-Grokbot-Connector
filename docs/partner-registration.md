@@ -60,7 +60,7 @@ come from the environment, not from the chat transcript.
 export TESLA_CLIENT_ID=...
 export TESLA_CLIENT_SECRET=...
 export TESLA_REGION=eu   # na, eu, or cn
-uv run --directory /workspace/tesla-grokbot-connector tesla-mcp register-partner \
+uv run --frozen --directory /workspace/tesla-grokbot-connector tesla-mcp register-partner \
   --domain naoiseirwin.github.io
 ```
 

@@ -28,14 +28,41 @@ class ProxyResult:
     billed: bool
     tesla_reason: str
     message: str
+    # True when the car may already have acted. The command slot stays used.
+    unknown: bool = False
 
 
 class ProxyTransportError(Exception):
-    """The proxy never answered. The command cap for this attempt should be released."""
+    """The request never left this process. The command slot should be released."""
 
     def __init__(self, message: str) -> None:
         self.message = message
         super().__init__(message)
+
+
+class ProxyUnknownOutcome(Exception):
+    """The request may have been sent. Keep the slot and do not retry."""
+
+    def __init__(self, message: str) -> None:
+        self.message = message
+        super().__init__(message)
+
+
+def _unknown_message(*, http_status: int | None = None) -> str:
+    if http_status is None:
+        lead = (
+            "The signing proxy did not answer after the command was sent, so it is "
+            "unknown whether the car acted."
+        )
+    else:
+        lead = (
+            f"The signing proxy returned HTTP {http_status} after the command was sent, "
+            "so it is unknown whether the car acted."
+        )
+    return (
+        f"{lead} Check the vehicle state before trying again. This attempt counts "
+        "toward the command cap. It will not be retried."
+    )
 
 
 def require_proxy(settings: Settings) -> str:
@@ -137,12 +164,24 @@ def interpret_response(response: Any) -> ProxyResult:
     `result: false` is a refusal, and `reason` is the text the car sent.
     """
     status = int(response.status_code)
+    # 408 and 5xx both mean the command may already have reached the car.
+    # Other 4xx answers are refusals. The slot stays used either way.
+    if status == 408 or status >= 500:
+        text = _tesla_text(response)
+        return ProxyResult(
+            http_status=status,
+            ok=False,
+            billed=True,
+            unknown=True,
+            tesla_reason=text,
+            message=_unknown_message(http_status=status),
+        )
     if status >= 400:
         text = _tesla_text(response)
         return ProxyResult(
             http_status=status,
             ok=False,
-            billed=status < 500,
+            billed=True,
             tesla_reason=text,
             message=f"Tesla refused the command: {text}",
         )
@@ -186,6 +225,28 @@ def interpret_response(response: Any) -> ProxyResult:
     )
 
 
+def _request_never_left(exc: BaseException) -> bool:
+    """True only when this process provably did not transmit the command.
+
+    httpx 0.28 ``ConnectTimeout`` is a ``TimeoutException``, not a
+    ``ConnectError``. A read or write timeout means the request may have left.
+    ``DecodingError``, ``CloseError``, ``LocalProtocolError``, and
+    ``TooManyRedirects`` are also not in this set: a body, a closed
+    connection, a local protocol failure, or a redirect can all happen after
+    the request was written.
+    """
+    import httpx
+
+    never_left = (
+        httpx.ConnectError,
+        httpx.ConnectTimeout,
+        httpx.PoolTimeout,
+        httpx.ProxyError,
+        httpx.UnsupportedProtocol,
+    )
+    return isinstance(exc, never_left)
+
+
 async def send_command(
     settings: Settings,
     token: str,
@@ -193,13 +254,18 @@ async def send_command(
     endpoint: str,
     body: dict[str, Any],
 ) -> ProxyResult:
-    """POST the command to the local proxy. The proxy signs it."""
+    """POST the command once. This function does not retry."""
     import httpx
 
     base = require_proxy(settings)
     path = f"/api/1/vehicles/{quote(vin, safe='')}/command/{endpoint}"
     try:
-        async with httpx.AsyncClient(timeout=60.0, verify=_verify(settings)) as client:
+        async with httpx.AsyncClient(
+            timeout=60.0,
+            verify=_verify(settings),
+            follow_redirects=False,
+            trust_env=False,
+        ) as client:
             response = await client.post(
                 base + path,
                 json=body,
@@ -208,10 +274,12 @@ async def send_command(
                     "Content-Type": "application/json",
                 },
             )
-    except httpx.RequestError:
-        raise ProxyTransportError(
-            "The signing proxy could not be reached. Nothing was confirmed by the car. "
-            "Check that tesla-http-proxy is running and TESLA_COMMAND_PROXY_URL matches it. "
-            "See docs/COMMANDS.md."
-        ) from None
+    except httpx.RequestError as exc:
+        if _request_never_left(exc):
+            raise ProxyTransportError(
+                "The signing proxy could not be reached, so the command was not sent. "
+                "Check that tesla-http-proxy is running and TESLA_COMMAND_PROXY_URL matches it. "
+                "See docs/COMMANDS.md."
+            ) from None
+        raise ProxyUnknownOutcome(_unknown_message()) from None
     return interpret_response(response)

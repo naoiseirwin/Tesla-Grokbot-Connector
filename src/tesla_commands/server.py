@@ -76,6 +76,14 @@ def _log_mode(runtime: Any) -> None:
     else:
         logger.info("vehicle_cmds: missing; commands will be refused until tesla-commands-mcp auth")
     logger.info("commands_allowlist=%s", listed)
+    if settings.command_proxy_insecure:
+        logger.warning(
+            "WARNING: TESLA_COMMAND_PROXY_INSECURE=true disables TLS certificate "
+            "verification for the command proxy at %s. The access token is sent "
+            "without checking the proxy certificate. Turn this off and set "
+            "TESLA_COMMAND_PROXY_CA.",
+            settings.command_proxy_url or "(no proxy URL)",
+        )
     if settings.command_config_error:
         logger.warning("commands refused: %s", settings.command_config_error)
     unknown = unknown_allowlist_entries(settings.commands_allowlist)

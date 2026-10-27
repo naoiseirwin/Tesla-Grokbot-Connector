@@ -54,7 +54,11 @@ class FleetClient:
         self._client: httpx.AsyncClient | None = None
 
     async def __aenter__(self) -> FleetClient:
-        self._client = httpx.AsyncClient(timeout=30.0)
+        self._client = httpx.AsyncClient(
+            timeout=30.0,
+            follow_redirects=False,
+            trust_env=False,
+        )
         return self
 
     async def __aexit__(self, *_exc: object) -> None:

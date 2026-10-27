@@ -7,14 +7,14 @@ VERSION := $(shell grep '^version' pyproject.toml | cut -d '"' -f 2)
 ##@ Setup
 
 deps: ## Install dependencies
-	@uv sync
+	@uv sync --locked
 
 deps/prod: ## Install production dependencies only
-	@uv sync --no-dev
+	@uv sync --locked --no-dev
 
 update: ## Update all dependencies to latest versions
 	@uv lock --upgrade
-	@uv sync
+	@uv sync --locked
 
 lock: ## Regenerate lock file from scratch
 	@rm -f uv.lock
@@ -31,38 +31,38 @@ clean: ## Clean up cache files and build artifacts
 can-release: lint test ## Run the same checks as CI
 
 test: ## Run the test suite (mocked Fleet API, no live Tesla calls)
-	@uv run python -m pytest
+	@uv run --frozen python -m pytest
 
 test/%: ## Run tests with a filter (e.g., make test/token)
-	@uv run python -m pytest -k $*
+	@uv run --frozen python -m pytest -k $*
 
 test/verbose: ## Run tests with verbose output
-	@uv run python -m pytest -v
+	@uv run --frozen python -m pytest -v
 
 lint: lint/ruff lint/pyright ## Run all linting tools
 
 lint/ruff: ## Run ruff linter
-	@uv run ruff check
-	@uv run ruff format --check
+	@uv run --frozen ruff check
+	@uv run --frozen ruff format --check
 
 lint/pyright: ## Run pyright type checker
-	@uv run python -m pyright
+	@uv run --frozen python -m pyright
 
 fmt: format
 format: ## Fix style violations and format code
-	@uv run ruff check --fix
-	@uv run ruff format
+	@uv run --frozen ruff check --fix
+	@uv run --frozen ruff format
 
 ##@ Development
 
 auth: ## Run the one-time Tesla sign-in
-	@uv run tesla-mcp auth
+	@uv run --frozen tesla-mcp auth
 
 poll: ## Take one no-wake snapshot of vehicles that are already online
-	@uv run tesla-mcp poll
+	@uv run --frozen tesla-mcp poll
 
 run: ## Run the stdio MCP server
-	@uv run tesla-mcp
+	@uv run --frozen tesla-mcp
 
 ##@ Info
 

@@ -3,13 +3,10 @@ title = "tesla-grokbot-connector"
 [extend]
 useDefault = true
 
+# Match the placeholder strings themselves. Do not allowlist whole paths:
+# a real secret in .env.example, the callback page, or the changelog must fail CI.
 [allowlist]
-description = "Placeholders and docs, not live credentials"
-paths = [
-  '''\.env\.example''',
-  '''docs/github-pages/callback\.html''',
-  '''CHANGELOG\.md''',
-]
+description = "Placeholder strings from .env.example, not live credentials"
 regexes = [
   '''your_client_id_here''',
   '''your_client_secret_here''',
