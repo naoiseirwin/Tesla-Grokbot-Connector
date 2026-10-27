@@ -164,9 +164,9 @@ def interpret_response(response: Any) -> ProxyResult:
     `result: false` is a refusal, and `reason` is the text the car sent.
     """
     status = int(response.status_code)
-    if status >= 500:
-        # The proxy answered after the request was written. The car may have
-        # already acted, including when Tesla will not invoice the 5xx.
+    # 408 and 5xx both mean the command may already have reached the car.
+    # Other 4xx answers are refusals. The slot stays used either way.
+    if status == 408 or status >= 500:
         text = _tesla_text(response)
         return ProxyResult(
             http_status=status,
@@ -230,6 +230,10 @@ def _request_never_left(exc: BaseException) -> bool:
 
     httpx 0.28 ``ConnectTimeout`` is a ``TimeoutException``, not a
     ``ConnectError``. A read or write timeout means the request may have left.
+    ``DecodingError``, ``CloseError``, ``LocalProtocolError``, and
+    ``TooManyRedirects`` are also not in this set: a body, a closed
+    connection, a local protocol failure, or a redirect can all happen after
+    the request was written.
     """
     import httpx
 
@@ -256,7 +260,12 @@ async def send_command(
     base = require_proxy(settings)
     path = f"/api/1/vehicles/{quote(vin, safe='')}/command/{endpoint}"
     try:
-        async with httpx.AsyncClient(timeout=60.0, verify=_verify(settings)) as client:
+        async with httpx.AsyncClient(
+            timeout=60.0,
+            verify=_verify(settings),
+            follow_redirects=False,
+            trust_env=False,
+        ) as client:
             response = await client.post(
                 base + path,
                 json=body,

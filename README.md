@@ -206,9 +206,12 @@ Example routines, all of them using the last snapshot rather than a wake:
 | Override | `TESLA_MCP_DATA_DIR` |
 
 A `.env` file in the working directory is not loaded. `TESLA_FLEET_API_BASE`,
-`TESLA_TOKEN_URL`, and `TESLA_AUTH_URL`, when set, must be `https` URLs on a
-Tesla host (`*.tesla.com`, or the China fleet host under `*.tesla.cn`). Other
-hosts are refused at startup.
+`TESLA_TOKEN_URL`, and `TESLA_AUTH_URL`, when set, must be the exact `https`
+endpoint for that setting and `TESLA_REGION`, on port 443. The Fleet host is
+`fleet-api.prd.na.vn.cloud.tesla.com`, `fleet-api.prd.eu.vn.cloud.tesla.com`,
+or, only when the region is `cn`, `fleet-api.prd.cn.vn.cloud.tesla.cn`. Token
+and sign-in stay `fleet-auth.prd.vn.cloud.tesla.com` and `auth.tesla.com` in
+every region. Other hosts are refused at startup.
 
 Client id and secret come from a secret-request or from `config.env`. The AES
 key comes from `TESLA_TOKEN_KEY` and is not written into the token file.
@@ -244,7 +247,7 @@ See [SECURITY.md](SECURITY.md).
 ## Development
 
 ```bash
-uv sync
+uv sync --locked
 make test
 make lint
 ```

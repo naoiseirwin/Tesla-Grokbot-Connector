@@ -6,7 +6,8 @@ cannot stop `tesla-mcp`. This loader is what `tesla-commands-mcp` uses.
 Invalid values do not raise. They come back as `command_config_error`, and
 the commands server refuses every command. Fleet, token, and authorize URLs
 are checked in `Settings.load`, which both servers call first. A host that is
-not Tesla raises there, before this function runs.
+not the exact endpoint for that setting and region raises there, before this
+function runs.
 """
 
 from __future__ import annotations

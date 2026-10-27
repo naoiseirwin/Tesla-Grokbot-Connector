@@ -97,7 +97,7 @@ Do one of these on the computer:
 The shape is [.env.example](.env.example). Placeholders only. Config is the
 process environment, `TESLA_MCP_CONFIG`, or that `config.env` file. A `.env`
 in the working directory is not read. Fleet, token, and authorize URL
-overrides must be `https` on a Tesla host.
+overrides must be the exact `https` endpoint for that setting and region.
 
 Generate a key on a private terminal if you need one. Do not paste it into
 chat:

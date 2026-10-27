@@ -1,12 +1,16 @@
 """Settings from the process environment and an explicit config file.
 
 No secrets have defaults. A `.env` file in the working directory is not read.
-Fleet, token, and authorize URLs must be https on a Tesla host.
+Fleet, token, and authorize URLs must each be one exact https Tesla endpoint.
+The Fleet host depends on `TESLA_REGION`. Token and sign-in stay on tesla.com
+in every region. `tesla.cn` is only the China Fleet host, and only when the
+region is `cn`.
 """
 
 from __future__ import annotations
 
 import os
+import re
 from dataclasses import dataclass
 from pathlib import Path
 from urllib.parse import urlparse
@@ -27,7 +31,18 @@ MAX_WAKE_DAILY_CAP = 10
 DEFAULT_WAKE_MIN_INTERVAL_SECONDS = 1800
 MAX_WAKE_MIN_INTERVAL_SECONDS = 24 * 60 * 60
 _LOOPBACK_HOSTS = frozenset({"localhost", "127.0.0.1", "::1"})
-_TESLA_ROOTS = ("tesla.com", "tesla.cn")
+# Exact hosts from regions.py. Token and sign-in stay on tesla.com in every
+# region, including cn. tesla.cn is only the China Fleet API host.
+_TOKEN_HOST = "fleet-auth.prd.vn.cloud.tesla.com"
+_AUTH_HOST = "auth.tesla.com"
+_TOKEN_PATH = "/oauth2/v3/token"
+_AUTH_PATH = "/oauth2/v3/authorize"
+_FLEET_HOSTS = {
+    "na": "fleet-api.prd.na.vn.cloud.tesla.com",
+    "eu": "fleet-api.prd.eu.vn.cloud.tesla.com",
+    "cn": "fleet-api.prd.cn.vn.cloud.tesla.cn",
+}
+_LDH_LABEL = re.compile(r"^[a-z0-9-]{1,63}$")
 _TRUE = {"1", "true", "yes", "on"}
 _FALSE = {"0", "false", "no", "off", ""}
 
@@ -97,52 +112,95 @@ def _proxy_url(value: str | None, *, allow_remote: bool) -> str | None:
         raise ValueError(
             "TESLA_COMMAND_PROXY_URL must not include a username, password, query, or fragment."
         )
-    if host not in _LOOPBACK_HOSTS and not allow_remote:
+    remote = host not in _LOOPBACK_HOSTS
+    if remote and not allow_remote:
         raise ValueError(
             "TESLA_COMMAND_PROXY_URL must point at this computer "
             "(localhost, 127.0.0.1, or ::1). The access token is sent to that URL. "
             "Set TESLA_COMMAND_PROXY_ALLOW_REMOTE=true only if you accept that."
         )
+    if remote and parsed.scheme != "https":
+        raise ValueError(
+            "TESLA_COMMAND_PROXY_URL must use https when it is not on this computer. "
+            "The access token is sent to this URL and must not travel in cleartext."
+        )
     return url
 
 
-def _is_tesla_host(host: str) -> bool:
-    """True for tesla.com, tesla.cn, and their real subdomains.
+def _ldh_hostname(host: str) -> bool:
+    """True for LDH labels only, with no trailing dot and no empty label.
 
-    ``tesla.com.evil.example`` and ``evil-tesla.com`` do not match. The host
-    must already be the hostname from ``urlparse``, not a raw URL.
+    ``urlparse`` keeps a trailing dot and leaves ``;`` and ``,`` inside a
+    label. Neither form is one of the hosts below.
     """
-    name = host.strip().lower().rstrip(".")
-    if not name or any(char in name for char in "%\\/@ \t#?"):
+    if not host or host.endswith(".") or ".." in host:
         return False
-    labels = name.split(".")
-    if any(not label or label.startswith("-") or label.endswith("-") for label in labels):
-        return False
-    return any(name == root or name.endswith("." + root) for root in _TESLA_ROOTS)
+    return all(_LDH_LABEL.fullmatch(label) is not None for label in host.split("."))
 
 
-def require_tesla_https_url(value: str, *, name: str) -> str:
-    """Return a Tesla https URL, or raise ValueError.
+def _allowed_endpoint(kind: str, region: str) -> tuple[str, str]:
+    """The only host and path for this setting and region.
 
-    Fleet, token, and authorize URLs are pinned to Tesla hosts. Userinfo is
-    refused even when the text contains a Tesla name, so
-    ``https://auth.tesla.com@evil.example`` cannot receive a refresh token.
+    Token and authorize hosts are the same in every region, including China.
+    The Fleet host is that region's Fleet API host. ``tesla.cn`` appears only
+    there. These strings are the hosts in ``regions.py``.
+    """
+    key = region.strip().lower()
+    if kind == "token":
+        return _TOKEN_HOST, _TOKEN_PATH
+    if kind == "auth":
+        return _AUTH_HOST, _AUTH_PATH
+    if kind == "fleet":
+        host = _FLEET_HOSTS.get(key)
+        if host is None:
+            raise ValueError(f"TESLA_REGION must be one of na, eu, cn. Got {region!r}.")
+        return host, ""
+    raise ValueError(f"Unknown Tesla endpoint {kind!r}.")
+
+
+def require_tesla_https_url(value: str, *, name: str, kind: str, region: str) -> str:
+    """Return one exact Tesla https endpoint, rebuilt from its parsed parts.
+
+    The raw string is not returned. An explicit port 443 is accepted and then
+    omitted, so it matches the defaults in ``regions.py``. Any other port, a
+    trailing dot, a username, a query, or a fragment is refused. A host that
+    is not the one host for this setting and region is refused, including
+    other ``tesla.com`` names, ``tesla.cn`` outside the China Fleet host, and
+    lookalikes.
     """
     raw = value.strip()
-    if not raw or any(char in raw for char in "\r\n\t"):
-        raise ValueError(f"{name} must be an https URL on a Tesla host.")
+    if not raw or any(ord(char) < 33 or ord(char) == 127 for char in raw):
+        raise ValueError(f"{name} must be the https Tesla endpoint for this setting.")
     parsed = urlparse(raw)
+    if parsed.scheme != "https":
+        raise ValueError(f"{name} must be an https URL.")
     if parsed.username is not None or parsed.password is not None or "@" in parsed.netloc:
+        raise ValueError(f"{name} must not include a username or password.")
+    if parsed.query or parsed.fragment:
+        raise ValueError(f"{name} must not include a query or fragment.")
+    try:
+        port = parsed.port
+    except ValueError:
+        raise ValueError(f"{name} must use port 443.") from None
+    if port not in (None, 443):
+        raise ValueError(f"{name} must use port 443.")
+    host = parsed.hostname or ""
+    if not _ldh_hostname(host):
+        raise ValueError(f"{name} must be the https Tesla endpoint for this setting.")
+    expected_host, expected_path = _allowed_endpoint(kind, region)
+    path = parsed.path.rstrip("/")
+    if host != expected_host or path != expected_path:
+        if expected_path:
+            shown = f"https://{expected_host}{expected_path}"
+        else:
+            shown = f"https://{expected_host}"
         raise ValueError(
-            f"{name} must be an https URL on a Tesla host, with no username or password."
+            f"{name} must be {shown} for TESLA_REGION={region.strip().lower()}. "
+            "Other hosts are refused."
         )
-    if parsed.scheme != "https" or not _is_tesla_host(parsed.hostname or ""):
-        raise ValueError(
-            f"{name} must be an https URL on a Tesla host such as auth.tesla.com, "
-            "fleet-auth.prd.vn.cloud.tesla.com, or "
-            "fleet-api.prd.<region>.vn.cloud.tesla.com. Other hosts are refused."
-        )
-    return raw.rstrip("/")
+    if expected_path:
+        return f"https://{expected_host}{expected_path}"
+    return f"https://{expected_host}"
 
 
 def insecure_proxy_problem(url: str | None, insecure: bool) -> str | None:
@@ -294,19 +352,34 @@ class Settings:
             upper=MAX_WAKE_MIN_INTERVAL_SECONDS,
         )
         poll_hours = float(os.environ.get("TESLA_POLL_INTERVAL_HOURS", "2"))
+        region_name = region.strip().lower()
         fleet_raw = (os.environ.get("TESLA_FLEET_API_BASE") or "").strip()
         if fleet_raw:
-            fleet_base = require_tesla_https_url(fleet_raw, name="TESLA_FLEET_API_BASE")
+            fleet_base = require_tesla_https_url(
+                fleet_raw,
+                name="TESLA_FLEET_API_BASE",
+                kind="fleet",
+                region=region_name,
+            )
         else:
             fleet_base = None
-            require_tesla_https_url(get_region(region).fleet_api, name="TESLA_FLEET_API_BASE")
+            require_tesla_https_url(
+                get_region(region).fleet_api,
+                name="TESLA_FLEET_API_BASE",
+                kind="fleet",
+                region=region_name,
+            )
         token_url = require_tesla_https_url(
             os.environ.get("TESLA_TOKEN_URL", TOKEN_URL),
             name="TESLA_TOKEN_URL",
+            kind="token",
+            region=region_name,
         )
         auth_url = require_tesla_https_url(
             os.environ.get("TESLA_AUTH_URL", AUTHORIZE_URL),
             name="TESLA_AUTH_URL",
+            kind="auth",
+            region=region_name,
         )
         # Command variables (TESLA_ENABLE_COMMANDS, TESLA_COMMANDS_*, TESLA_COMMAND_PROXY_*)
         # are intentionally not read here. A bad value in the shared config.env must not
@@ -314,7 +387,7 @@ class Settings:
         return cls(
             client_id=os.environ.get("TESLA_CLIENT_ID", "").strip(),
             client_secret=os.environ.get("TESLA_CLIENT_SECRET", "").strip(),
-            region=region.strip().lower(),
+            region=region_name,
             redirect_uri=os.environ.get("TESLA_REDIRECT_URI", DEFAULT_REDIRECT_URI).strip(),
             token_key=token_key,
             data_dir=default_data_dir(),

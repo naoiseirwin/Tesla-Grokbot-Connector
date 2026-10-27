@@ -37,7 +37,7 @@ async def register_partner(settings: Settings, domain: str) -> dict[str, object]
         raise TeslaError("Partner token request did not return an access token.")
     headers = {"Authorization": f"Bearer {access}"}
     base = settings.fleet_base
-    async with httpx.AsyncClient(timeout=30.0) as client:
+    async with httpx.AsyncClient(timeout=30.0, follow_redirects=False, trust_env=False) as client:
         registered = await client.post(
             f"{base}/api/1/partner_accounts",
             headers=headers,

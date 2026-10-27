@@ -31,6 +31,11 @@ from .catalog import COMMANDS, CommandSpec, build_body, command_allowed, would_s
 from .errors import CommandRefusal
 from .proxy import ProxyTransportError, ProxyUnknownOutcome, require_proxy, send_command
 
+_INTERRUPTED = (
+    "The command was interrupted after it may have been sent, so it is unknown "
+    "whether the car acted. Check the vehicle state before trying again. This "
+    "attempt counts toward the command cap. It will not be retried."
+)
 _DISABLED = (
     "Vehicle commands are off. Nothing was sent to the car. "
     "Set TESLA_ENABLE_COMMANDS=true to allow this program to accept commands. "
@@ -353,9 +358,34 @@ async def _send_live(
             secrets=(token, runtime.settings.client_secret),
             spec=spec,
         )
+    except BaseException:
+        # Cancelled or unexpected after send_command was entered. The request
+        # may already have left. Keep the slot, record that the outcome is
+        # unknown, and let the caller see the original exception.
+        try:
+            _finish(
+                runtime,
+                audit,
+                command=spec.name,
+                parameters=parameters,
+                vin_selector=vin_selector,
+                ok=False,
+                sent="unknown",
+                result="unknown",
+                error=_INTERRUPTED,
+                error_type="unknown_outcome",
+                would=planned,
+                raw_vin=vehicle.vin,
+                woke=woke,
+                secrets=(token, runtime.settings.client_secret),
+                spec=spec,
+            )
+        except Exception:
+            pass
+        raise
 
     if result.unknown:
-        # A 5xx arrived after the request was sent. Keep the slot. Do not retry.
+        # 408 or 5xx arrived after the request was sent. Keep the slot. Do not retry.
         _record_command_usage(runtime, vehicle.vin, spec.endpoint, result.http_status)
         return _finish(
             runtime,
@@ -376,8 +406,6 @@ async def _send_live(
             secrets=(token, runtime.settings.client_secret),
             spec=spec,
         )
-    if event_id is not None and not result.billed:
-        _release(budget, event_id)
     _record_command_usage(runtime, vehicle.vin, spec.endpoint, result.http_status)
     if not result.ok:
         return _finish(

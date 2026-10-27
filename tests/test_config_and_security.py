@@ -90,6 +90,29 @@ _REJECTED_ENDPOINTS = (
     "https://auth.tesla.com@evil.example/oauth2/v3/token",
     "https://user:not-a-secret@auth.tesla.com/oauth2/v3/token",
     "https://127.0.0.1/token",
+    "https://anything.tesla.com",
+    "https://fleet-api.prd.na.vn.cloud.tesla.com:8443",
+    "https://fleet-api.prd.na.vn.cloud.tesla.com:0",
+    "https://fleet-api.prd.na.vn.cloud.tesla.com:99999",
+    "https://auth.tesla.com:8443/oauth2/v3/authorize",
+    "https://auth.tesla.com:0/oauth2/v3/authorize",
+    "https://auth.tesla.com:99999/oauth2/v3/authorize",
+    "https://evil.com;.tesla.com",
+    "https://evil.com,.tesla.com",
+    "https://auth.tesla.com./oauth2/v3/authorize",
+    "https://auth.tesla.com../oauth2/v3/authorize",
+    "https://fleet-api.prd.na.vn.cloud.tesla.com..",
+    "https://8.8.8.8/oauth2/v3/token",
+    "https://[::1]/oauth2/v3/token",
+    "https://[2001:db8::1]/oauth2/v3/authorize",
+    "https://\u0430uth.tesla.com/oauth2/v3/authorize",
+    "https://auth.xn--tesla-j5a.com/oauth2/v3/authorize",
+    "https://xn--uth-5cd.tesla.com/oauth2/v3/authorize",
+    "https://auth\uff0etesla\uff0ecom/oauth2/v3/authorize",
+    "https://auth.tesla.com/oauth2/v3/authorize?next=1",
+    "https://auth.tesla.com/oauth2/v3/authorize#fragment",
+    "https://fleet-api.prd.cn.vn.cloud.tesla.cn",
+    "https://EVIL.EXAMPLE/token",
 )
 
 
@@ -124,6 +147,105 @@ def test_region_default_endpoints_are_accepted(monkeypatch, tmp_path):
         assert explicit.fleet_api_base == region.fleet_api.rstrip("/")
         assert explicit.token_url == TOKEN_URL
         assert explicit.auth_url == AUTHORIZE_URL
+
+
+def test_uppercase_hosts_and_port_443_canonicalize(monkeypatch, tmp_path):
+    from tesla_mcp.regions import AUTHORIZE_URL, TOKEN_URL
+
+    _clear_tesla_env(monkeypatch)
+    monkeypatch.setenv("TESLA_MCP_DATA_DIR", str(tmp_path))
+    monkeypatch.setenv("TESLA_REGION", "na")
+    monkeypatch.setenv("TESLA_AUTH_URL", "https://AUTH.TESLA.COM:443/oauth2/v3/authorize")
+    monkeypatch.setenv(
+        "TESLA_TOKEN_URL", "https://FLEET-AUTH.PRD.VN.CLOUD.TESLA.COM:443/oauth2/v3/token"
+    )
+    monkeypatch.setenv(
+        "TESLA_FLEET_API_BASE",
+        "https://FLEET-API.PRD.NA.VN.CLOUD.TESLA.COM:443/",
+    )
+    settings = Settings.load()
+    assert settings.auth_url == AUTHORIZE_URL
+    assert settings.token_url == TOKEN_URL
+    assert settings.fleet_api_base == REGIONS["na"].fleet_api
+    assert settings.auth_url == "https://auth.tesla.com/oauth2/v3/authorize"
+
+
+def test_tesla_cn_fleet_host_requires_the_cn_region(monkeypatch, tmp_path):
+    from tesla_mcp.regions import AUTHORIZE_URL, TOKEN_URL
+
+    cn = REGIONS["cn"].fleet_api
+    eu = REGIONS["eu"].fleet_api
+    _clear_tesla_env(monkeypatch)
+    monkeypatch.setenv("TESLA_MCP_DATA_DIR", str(tmp_path))
+    monkeypatch.setenv("TESLA_REGION", "na")
+    monkeypatch.setenv("TESLA_FLEET_API_BASE", cn)
+    with pytest.raises(ValueError, match="TESLA_FLEET_API_BASE"):
+        Settings.load()
+    monkeypatch.setenv("TESLA_FLEET_API_BASE", eu)
+    with pytest.raises(ValueError, match="TESLA_FLEET_API_BASE"):
+        Settings.load()
+    monkeypatch.setenv("TESLA_REGION", "cn")
+    monkeypatch.setenv("TESLA_FLEET_API_BASE", cn + "/")
+    loaded = Settings.load()
+    assert loaded.fleet_api_base == cn
+    assert loaded.token_url == TOKEN_URL
+    assert loaded.auth_url == AUTHORIZE_URL
+    assert "tesla.cn" not in loaded.token_url
+    assert "tesla.cn" not in loaded.auth_url
+    monkeypatch.setenv(
+        "TESLA_TOKEN_URL",
+        "https://fleet-auth.prd.vn.cloud.tesla.cn/oauth2/v3/token",
+    )
+    with pytest.raises(ValueError, match="TESLA_TOKEN_URL"):
+        Settings.load()
+    monkeypatch.setenv("TESLA_TOKEN_URL", TOKEN_URL)
+    monkeypatch.setenv("TESLA_AUTH_URL", "https://auth.tesla.cn/oauth2/v3/authorize")
+    with pytest.raises(ValueError, match="TESLA_AUTH_URL"):
+        Settings.load()
+
+
+def test_httpx_clients_disable_redirects_and_env_proxy():
+    import ast
+
+    found: list[str] = []
+    for path in (ROOT / "src").rglob("*.py"):
+        tree = ast.parse(path.read_text(encoding="utf-8"))
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.Call) or not isinstance(node.func, ast.Attribute):
+                continue
+            if node.func.attr not in {"Client", "AsyncClient"}:
+                continue
+            flags: dict[str, object] = {}
+            for keyword in node.keywords:
+                if isinstance(keyword.value, ast.Constant):
+                    flags[keyword.arg or ""] = keyword.value.value
+            found.append(str(path.relative_to(ROOT)))
+            assert flags.get("follow_redirects") is False, path
+            assert flags.get("trust_env") is False, path
+    assert set(found) == {
+        "src/tesla_commands/proxy.py",
+        "src/tesla_mcp/auth_flow.py",
+        "src/tesla_mcp/fleet.py",
+        "src/tesla_mcp/partner.py",
+    }
+
+
+async def test_fleet_client_ignores_proxy_and_ssl_env(monkeypatch, tmp_path):
+    from tesla_mcp.fleet import FleetClient
+    from tesla_mcp.runtime import build_runtime
+    from tests.helpers import make_settings
+
+    monkeypatch.setenv("HTTPS_PROXY", "http://127.0.0.1:9")
+    monkeypatch.setenv("HTTP_PROXY", "http://127.0.0.1:9")
+    monkeypatch.setenv("ALL_PROXY", "http://127.0.0.1:9")
+    monkeypatch.setenv("SSL_CERT_FILE", "/tmp/not-a-real-cert.pem")
+    runtime = build_runtime(make_settings(tmp_path))
+    async with FleetClient(runtime) as fleet:
+        client = fleet._client
+        assert client is not None
+        assert client.follow_redirects is False
+        assert client.trust_env is False
+        assert client._mounts == {}
 
 
 def test_cwd_dotenv_is_ignored(monkeypatch, tmp_path):

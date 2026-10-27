@@ -8,7 +8,7 @@ default. Do not add a command tool, a virtual key, or `tesla-http-proxy` to
 ## Setup
 
 ```bash
-uv sync
+uv sync --locked
 make test
 make lint
 ```

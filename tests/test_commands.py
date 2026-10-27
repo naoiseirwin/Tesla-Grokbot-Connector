@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 import os
 from datetime import UTC, datetime
@@ -591,7 +592,8 @@ async def test_proxy_timeout_is_unknown_and_keeps_the_slot(tmp_path, error_type)
     assert "vehicle" in str(unknown["error"]).lower()
 
 
-async def test_proxy_5xx_is_unknown_and_a_second_call_counts_against_the_cap(tmp_path):
+@pytest.mark.parametrize("status_code", [408, 500, 502, 503, 504])
+async def test_ambiguous_proxy_status_is_unknown_and_keeps_the_slot(tmp_path, status_code):
     settings = command_settings(
         tmp_path,
         commands_dry_run=False,
@@ -604,23 +606,127 @@ async def test_proxy_5xx_is_unknown_and_a_second_call_counts_against_the_cap(tmp
     with respx.mock(assert_all_called=False) as router:
         FleetAPIStub(router).list_vehicles(vehicle_list(state="online"))
         command = router.post(url__regex=r".*/command/door_lock$").mock(
-            return_value=httpx.Response(503, json={"error": "upstream"})
+            return_value=httpx.Response(status_code, json={"error": "upstream"})
         )
         async with Client(mcp) as client:
             failed = tool_json(await client.call_tool("tesla_door_lock", {}))
             again = tool_json(await client.call_tool("tesla_door_lock", {}))
     assert command.call_count == 1
     assert failed["sent"] == "unknown"
-    assert failed["http_status"] == 503
+    assert failed["http_status"] == status_code
     assert "vehicle" in str(failed["error"]).lower()
-    assert "503" in str(failed["error"])
+    assert str(status_code) in str(failed["error"])
     assert "not sent" not in str(failed["error"]).lower()
+    assert "refused" not in str(failed["error"]).lower()
     assert again["refusal_reason"] == "command_cap"
     assert again["sent"] is False
     assert CommandBudget(settings).peek("door_lock").allowed is False
     unknown = next(row for row in _audit_records(settings) if row["result"] == "unknown")
-    assert unknown["http_status"] == 503
+    assert unknown["http_status"] == status_code
     assert unknown["live"] == "unknown"
+
+
+@pytest.mark.parametrize("status_code", [400, 404, 429])
+async def test_proxy_4xx_keeps_the_slot(tmp_path, status_code):
+    settings = command_settings(
+        tmp_path,
+        commands_dry_run=False,
+        commands_per_command_daily_cap=1,
+        commands_daily_cap=10,
+        commands_allowlist=("door_lock",),
+    )
+    seed_token(settings, scopes=COMMAND_SCOPES)
+    mcp = create_server(settings)
+    with respx.mock(assert_all_called=False) as router:
+        FleetAPIStub(router).list_vehicles(vehicle_list(state="online"))
+        command = router.post(url__regex=r".*/command/door_lock$").mock(
+            return_value=httpx.Response(status_code, json={"error": "nope"})
+        )
+        async with Client(mcp) as client:
+            failed = tool_json(await client.call_tool("tesla_door_lock", {}))
+            again = tool_json(await client.call_tool("tesla_door_lock", {}))
+    assert command.call_count == 1
+    assert failed["sent"] is True
+    assert failed["ok"] is False
+    assert "refused" in str(failed["error"]).lower()
+    assert failed["http_status"] == status_code
+    assert again["refusal_reason"] == "command_cap"
+    assert again["sent"] is False
+    assert CommandBudget(settings).peek("door_lock").allowed is False
+
+
+async def test_connect_timeout_releases_the_slot(tmp_path):
+    settings = command_settings(
+        tmp_path,
+        commands_dry_run=False,
+        commands_per_command_daily_cap=1,
+        commands_allowlist=("door_lock",),
+    )
+    seed_token(settings, scopes=COMMAND_SCOPES)
+    mcp = create_server(settings)
+    calls = {"n": 0}
+
+    def door(_request: httpx.Request) -> httpx.Response:
+        calls["n"] += 1
+        if calls["n"] == 1:
+            raise httpx.ConnectTimeout("timed out")
+        return httpx.Response(200, json={"response": {"result": True, "reason": ""}})
+
+    with respx.mock(assert_all_called=False) as router:
+        FleetAPIStub(router).list_vehicles(vehicle_list(state="online"))
+        router.post(url__regex=r".*/command/door_lock$").mock(side_effect=door)
+        async with Client(mcp) as client:
+            failed = tool_json(await client.call_tool("tesla_door_lock", {}))
+            sent = tool_json(await client.call_tool("tesla_door_lock", {}))
+    assert failed["ok"] is False
+    assert failed["sent"] is False
+    assert "not sent" in str(failed["error"]).lower()
+    assert sent["ok"] is True
+    assert sent["sent"] is True
+    assert calls["n"] == 2
+
+
+@pytest.mark.parametrize(
+    "explosion",
+    [RuntimeError("boom"), asyncio.CancelledError()],
+)
+async def test_interrupted_send_keeps_the_slot_and_audits_unknown(tmp_path, monkeypatch, explosion):
+    settings = command_settings(
+        tmp_path,
+        commands_dry_run=False,
+        commands_per_command_daily_cap=1,
+        commands_allowlist=("door_lock",),
+    )
+    seed_token(settings, scopes=COMMAND_SCOPES)
+    mcp = create_server(settings)
+
+    async def explode(*_args: object, **_kwargs: object) -> object:
+        raise explosion
+
+    monkeypatch.setattr("tesla_commands.execute.send_command", explode)
+    propagated: BaseException | None = None
+    with respx.mock(assert_all_called=False) as router:
+        FleetAPIStub(router).list_vehicles(vehicle_list(state="online"))
+        try:
+            async with Client(mcp) as client:
+                await client.call_tool("tesla_door_lock", {})
+        except BaseException as exc:
+            propagated = exc
+    assert propagated is not None
+    if isinstance(explosion, RuntimeError):
+        assert "boom" in str(propagated)
+    assert CommandBudget(settings).peek("door_lock").allowed is False
+    unknown = next(row for row in _audit_records(settings) if row["result"] == "unknown")
+    assert unknown["live"] == "unknown"
+    assert "interrupted" in str(unknown["error"]).lower()
+    assert "retried" in str(unknown["error"]).lower()
+    follow = create_server(settings)
+    with respx.mock(assert_all_called=False) as router:
+        FleetAPIStub(router).list_vehicles(vehicle_list(state="online"))
+        async with Client(follow) as client:
+            again = tool_json(await client.call_tool("tesla_door_lock", {}))
+    assert again["sent"] is False
+    assert again["refusal_reason"] == "command_cap"
 
 
 async def test_asleep_car_uses_the_shared_wake_cap(tmp_path):
@@ -1206,6 +1312,10 @@ def test_proxy_errors_before_send_are_not_unknown():
     assert not _request_never_left(httpx.ReadError("down"))
     assert not _request_never_left(httpx.WriteError("down"))
     assert not _request_never_left(httpx.RemoteProtocolError("down"))
+    assert not _request_never_left(httpx.DecodingError("down"))
+    assert not _request_never_left(httpx.CloseError("down"))
+    assert not _request_never_left(httpx.LocalProtocolError("down"))
+    assert not _request_never_left(httpx.TooManyRedirects("down"))
 
 
 def test_insecure_loopback_warns_and_remote_insecure_is_refused(monkeypatch, tmp_path, caplog):
@@ -1234,3 +1344,20 @@ def test_insecure_loopback_warns_and_remote_insecure_is_refused(monkeypatch, tmp
     assert refused.command_proxy_insecure is False
     assert refused.command_config_error is not None
     assert "TESLA_COMMAND_PROXY_INSECURE" in refused.command_config_error
+
+    monkeypatch.setenv("TESLA_COMMAND_PROXY_INSECURE", "false")
+    monkeypatch.setenv("TESLA_COMMAND_PROXY_URL", "http://commands.example")
+    cleartext = apply_command_environment(Settings.load())
+    assert cleartext.command_proxy_url is None
+    assert cleartext.command_config_error is not None
+    assert "https" in cleartext.command_config_error
+    assert "cleartext" in cleartext.command_config_error
+    monkeypatch.setenv("TESLA_COMMAND_PROXY_URL", "https://commands.example")
+    remote_https = apply_command_environment(Settings.load())
+    assert remote_https.command_config_error is None
+    assert remote_https.command_proxy_url == "https://commands.example"
+    monkeypatch.delenv("TESLA_COMMAND_PROXY_ALLOW_REMOTE")
+    monkeypatch.setenv("TESLA_COMMAND_PROXY_URL", "http://127.0.0.1:4443")
+    loopback = apply_command_environment(Settings.load())
+    assert loopback.command_config_error is None
+    assert loopback.command_proxy_url == "http://127.0.0.1:4443"

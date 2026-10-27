@@ -190,7 +190,7 @@ class CallbackServer:
 
 
 async def post_form(url: str, data: dict[str, str]) -> dict[str, Any]:
-    async with httpx.AsyncClient(timeout=30.0) as client:
+    async with httpx.AsyncClient(timeout=30.0, follow_redirects=False, trust_env=False) as client:
         response = await client.post(url, data=data)
     if response.status_code >= 400:
         code = error_code(response)

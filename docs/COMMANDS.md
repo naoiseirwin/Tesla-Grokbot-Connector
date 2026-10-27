@@ -97,7 +97,7 @@ command the car.
 | `TESLA_COMMAND_PROXY_URL` | unset | Local signing proxy, for example `https://127.0.0.1:4443`. Required for a live send. |
 | `TESLA_COMMAND_PROXY_CA` | unset | The proxy's TLS certificate file, so this program can trust it. |
 | `TESLA_COMMAND_PROXY_INSECURE` | `false` | Skip TLS checking. Refused unless the proxy URL is loopback. Startup logs a warning when it is on. Prefer `TESLA_COMMAND_PROXY_CA`. |
-| `TESLA_COMMAND_PROXY_ALLOW_REMOTE` | `false` | Leave false. The access token is sent to the proxy URL, so the proxy must be on this computer. |
+| `TESLA_COMMAND_PROXY_ALLOW_REMOTE` | `false` | Leave false. The access token is sent to the proxy URL, so the proxy must be on this computer. A host that is not on this computer must be `https`. |
 
 A number above the maximum is rejected, so a typo cannot remove the cap.
 Counts use a rolling 24-hour window, not a calendar day. A command sent at
@@ -267,7 +267,8 @@ Leave `TESLA_COMMAND_PROXY_INSECURE` unset.
 The proxy listens only on this computer. Do not publish port 4443. The
 access token is sent to whatever URL you configure, which is why a
 non-local URL is rejected unless you set
-`TESLA_COMMAND_PROXY_ALLOW_REMOTE=true`. Do not set that for normal use.
+`TESLA_COMMAND_PROXY_ALLOW_REMOTE=true`. That remote URL must be `https`.
+Do not set the flag for normal use.
 
 This project's default region is North America (`TESLA_REGION=na`). The
 proxy has to talk to the same region as the account. If Tesla answers
@@ -387,7 +388,7 @@ file should stay out of git and out of chat.
 | Charge limit, temperature, or seat was refused | The number is outside Tesla's range. Nothing was sent. |
 | Daily cap or per-command cap | The local limit for the last 24 hours is used. |
 | Wake budget | The car was asleep and a wake was refused: the 24-hour cap, the minimum gap since the last wake, or the hard limit of 3 wakes per minute. The command was not sent. |
-| `sent` is `"unknown"` | The proxy timed out, or it returned HTTP 5xx, after the request was sent. The car may already have acted. Check the vehicle before trying again. The attempt counts toward the cap and is not retried. |
+| `sent` is `"unknown"` | The proxy timed out, returned HTTP 408 or 5xx, or the call was interrupted after the request may have been sent. The car may already have acted. Check the vehicle before trying again. The attempt counts toward the cap and is not retried. |
 | `not_ready` | The command tool ran without a ready Tesla client. Nothing was sent. The attempt is in the audit log. |
 | Invalid `TESLA_TIMEZONE` or unreadable history file | The command was refused before any call. Nothing was sent. |
 | Invalid command setting | A command variable in the environment is not usable (for example a daily cap above 40, or a proxy URL that is not on this computer). Nothing was sent. The read-only server ignores that variable. |

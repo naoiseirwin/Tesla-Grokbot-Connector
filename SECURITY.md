@@ -22,12 +22,20 @@ CI runs gitleaks and a test that rejects private-key PEM headers in the tree.
 
 ## Endpoint hosts
 
-`TESLA_FLEET_API_BASE`, `TESLA_TOKEN_URL`, and `TESLA_AUTH_URL` must be https
-URLs on a Tesla host (`*.tesla.com`, or the China fleet host under
-`*.tesla.cn`). The server refuses other hosts at startup, including `http`
-and userinfo such as `https://auth.tesla.com@evil.example`. Configuration
-comes from the process environment, `TESLA_MCP_CONFIG`, or
-`<data dir>/config.env`. A `.env` file in the working directory is not read.
+`TESLA_FLEET_API_BASE`, `TESLA_TOKEN_URL`, and `TESLA_AUTH_URL` must be the
+exact https endpoint for that setting and `TESLA_REGION`, port 443 only. The
+URL is rebuilt from its parsed parts. The Fleet host is the one host for the
+region (`fleet-api.prd.na.vn.cloud.tesla.com`,
+`fleet-api.prd.eu.vn.cloud.tesla.com`, or
+`fleet-api.prd.cn.vn.cloud.tesla.cn`). `tesla.cn` is accepted only as that
+China Fleet host, and only when the region is `cn`. Token and sign-in stay
+`fleet-auth.prd.vn.cloud.tesla.com` and `auth.tesla.com` in every region.
+Other hosts are refused at startup, including another `tesla.com` name,
+`http`, a non-443 port, and userinfo such as
+`https://auth.tesla.com@evil.example`. Configuration comes from the process
+environment, `TESLA_MCP_CONFIG`, or `<data dir>/config.env`. A `.env` file in
+the working directory is not read. A command proxy that is not on this
+computer must use https, so the access token is not sent in cleartext.
 
 ## Token file
 
