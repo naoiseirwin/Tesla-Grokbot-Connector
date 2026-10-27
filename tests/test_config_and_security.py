@@ -72,6 +72,130 @@ def test_defaults_are_read_only(monkeypatch, tmp_path):
     assert settings.command_proxy_insecure is False
 
 
+def _clear_tesla_env(monkeypatch: pytest.MonkeyPatch) -> None:
+    for key in list(os.environ):
+        if key.startswith("TESLA_"):
+            monkeypatch.delenv(key, raising=False)
+
+
+_REJECTED_ENDPOINTS = (
+    "https://evil.example/token",
+    "https://tesla.com.evil.example/oauth2/v3/authorize",
+    "https://auth.tesla.com.evil.example/oauth2/v3/authorize",
+    "https://evil-tesla.com/oauth2/v3/token",
+    "https://nottesla.com/",
+    "http://auth.tesla.com/oauth2/v3/authorize",
+    "http://fleet-api.prd.na.vn.cloud.tesla.com",
+    "http://fleet-auth.prd.vn.cloud.tesla.com/oauth2/v3/token",
+    "https://auth.tesla.com@evil.example/oauth2/v3/token",
+    "https://user:not-a-secret@auth.tesla.com/oauth2/v3/token",
+    "https://127.0.0.1/token",
+)
+
+
+@pytest.mark.parametrize("name", ["TESLA_FLEET_API_BASE", "TESLA_TOKEN_URL", "TESLA_AUTH_URL"])
+@pytest.mark.parametrize("value", _REJECTED_ENDPOINTS)
+def test_tesla_endpoint_overrides_reject_foreign_hosts(monkeypatch, tmp_path, name, value):
+    _clear_tesla_env(monkeypatch)
+    monkeypatch.setenv("TESLA_MCP_DATA_DIR", str(tmp_path))
+    monkeypatch.setenv(name, value)
+    with pytest.raises(ValueError, match=name):
+        Settings.load()
+
+
+def test_region_default_endpoints_are_accepted(monkeypatch, tmp_path):
+    from tesla_mcp.regions import AUTHORIZE_URL, TOKEN_URL
+
+    _clear_tesla_env(monkeypatch)
+    monkeypatch.setenv("TESLA_MCP_DATA_DIR", str(tmp_path))
+    for code, region in REGIONS.items():
+        monkeypatch.setenv("TESLA_REGION", code)
+        monkeypatch.delenv("TESLA_FLEET_API_BASE", raising=False)
+        monkeypatch.delenv("TESLA_TOKEN_URL", raising=False)
+        monkeypatch.delenv("TESLA_AUTH_URL", raising=False)
+        settings = Settings.load()
+        assert settings.fleet_base == region.fleet_api
+        assert settings.token_url == TOKEN_URL
+        assert settings.auth_url == AUTHORIZE_URL
+        monkeypatch.setenv("TESLA_FLEET_API_BASE", region.fleet_api + "/")
+        monkeypatch.setenv("TESLA_TOKEN_URL", TOKEN_URL)
+        monkeypatch.setenv("TESLA_AUTH_URL", AUTHORIZE_URL)
+        explicit = Settings.load()
+        assert explicit.fleet_api_base == region.fleet_api.rstrip("/")
+        assert explicit.token_url == TOKEN_URL
+        assert explicit.auth_url == AUTHORIZE_URL
+
+
+def test_cwd_dotenv_is_ignored(monkeypatch, tmp_path):
+    _clear_tesla_env(monkeypatch)
+    # load_dotenv writes os.environ directly. Restore that snapshot so a
+    # planted .env cannot leak into later tests.
+    snapshot = {key: os.environ.get(key) for key in os.environ if key.startswith("TESLA_")}
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / ".env").write_text(
+        "TESLA_REGION=cn\n"
+        "TESLA_CLIENT_ID=from-cwd-dotenv\n"
+        "TESLA_TOKEN_URL=https://evil.example/token\n"
+        "TESLA_FLEET_API_BASE=https://evil.example\n"
+        "TESLA_AUTH_URL=http://auth.tesla.com/oauth2/v3/authorize\n",
+        encoding="utf-8",
+    )
+    data = tmp_path / "data"
+    data.mkdir()
+    (data / "config.env").write_text(
+        "TESLA_REGION=eu\nTESLA_CLIENT_ID=from-config-env\n",
+        encoding="utf-8",
+    )
+    try:
+        os.environ["TESLA_MCP_DATA_DIR"] = str(data)
+        settings = Settings.load()
+        assert settings.region == "eu"
+        assert settings.client_id == "from-config-env"
+        assert settings.fleet_api_base is None
+        assert settings.fleet_base == REGIONS["eu"].fleet_api
+        assert "evil.example" not in settings.token_url
+        assert settings.auth_url.startswith("https://auth.tesla.com")
+        os.environ["TESLA_REGION"] = "na"
+        assert Settings.load().region == "na"
+        # Already-set process variables win. Drop the ones config.env just
+        # loaded so the explicit file can supply the client id, and config.env
+        # can still supply the region. The cwd .env must not supply either.
+        os.environ.pop("TESLA_CLIENT_ID", None)
+        os.environ.pop("TESLA_REGION", None)
+        explicit = tmp_path / "explicit.env"
+        explicit.write_text("TESLA_CLIENT_ID=from-explicit\n", encoding="utf-8")
+        os.environ["TESLA_MCP_CONFIG"] = str(explicit)
+        chosen = Settings.load()
+        assert chosen.client_id == "from-explicit"
+        assert chosen.region == "eu"
+    finally:
+        for key in list(os.environ):
+            if key.startswith("TESLA_") and key not in snapshot:
+                del os.environ[key]
+        for key, value in snapshot.items():
+            if value is None:
+                os.environ.pop(key, None)
+            else:
+                os.environ[key] = value
+
+
+def test_wake_daily_cap_and_interval_are_bounded(monkeypatch, tmp_path):
+    _clear_tesla_env(monkeypatch)
+    monkeypatch.setenv("TESLA_MCP_DATA_DIR", str(tmp_path))
+    monkeypatch.setenv("TESLA_WAKE_DAILY_CAP", "10")
+    monkeypatch.setenv("TESLA_WAKE_MIN_INTERVAL_SECONDS", "86400")
+    settings = Settings.load()
+    assert settings.wake_daily_cap == 10
+    assert settings.wake_min_interval_seconds == 86400
+    monkeypatch.setenv("TESLA_WAKE_DAILY_CAP", "11")
+    with pytest.raises(ValueError, match="TESLA_WAKE_DAILY_CAP"):
+        Settings.load()
+    monkeypatch.setenv("TESLA_WAKE_DAILY_CAP", "3")
+    monkeypatch.setenv("TESLA_WAKE_MIN_INTERVAL_SECONDS", "86401")
+    with pytest.raises(ValueError, match="TESLA_WAKE_MIN_INTERVAL_SECONDS"):
+        Settings.load()
+
+
 def test_wake_per_minute_cannot_exceed_teslas_cap(monkeypatch, tmp_path):
     monkeypatch.setenv("TESLA_MCP_DATA_DIR", str(tmp_path))
     monkeypatch.setenv("TESLA_WAKE_PER_MINUTE", "99")

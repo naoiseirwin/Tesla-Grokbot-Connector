@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import json
-from datetime import timedelta
+from datetime import UTC, datetime, timedelta
 
 import httpx
 import respx
@@ -259,6 +259,25 @@ async def test_wake_401_refreshes_and_does_not_send_a_second_wake(tmp_path):
     assert "should-not-leak" not in json.dumps(payload)
     assert "not sent again" in str(payload["error"])
     assert build_runtime(settings).wakes.summary()["used_today"] == 1
+
+
+def test_wake_cap_is_a_rolling_24_hour_window(tmp_path):
+    settings = make_settings(
+        tmp_path,
+        wake_daily_cap=1,
+        wake_min_interval_seconds=0,
+        timezone="America/New_York",
+    )
+    runtime = build_runtime(settings)
+    late_evening = datetime(2026, 10, 23, 3, 30, tzinfo=UTC)
+    assert runtime.wakes.reserve(VIN, now=late_evening).allowed
+    after_local_midnight = runtime.wakes.reserve(VIN, now=datetime(2026, 10, 23, 4, 30, tzinfo=UTC))
+    assert after_local_midnight.allowed is False
+    assert after_local_midnight.reason == "daily"
+    still_inside = runtime.wakes.reserve(VIN, now=late_evening + timedelta(hours=24))
+    assert still_inside.allowed is False
+    opened = runtime.wakes.reserve(VIN, now=late_evening + timedelta(hours=24, seconds=1))
+    assert opened.allowed is True
 
 
 def test_reserve_allows_only_one_of_two_threads(tmp_path):

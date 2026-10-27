@@ -49,6 +49,21 @@ def local_day_start(moment: datetime, tzname: str) -> datetime:
     return start.astimezone(UTC)
 
 
+# Command and wake caps use this window. It rolls with the clock and does not
+# reset at local midnight, so a burst just before midnight cannot double the cap.
+BUDGET_WINDOW = timedelta(hours=24)
+
+
+def budget_window_start(moment: datetime) -> datetime:
+    """UTC instant 24 hours before `moment`.
+
+    A row recorded at this instant still counts. It drops out one second later.
+    """
+    if moment.tzinfo is None:
+        moment = moment.replace(tzinfo=UTC)
+    return moment.astimezone(UTC) - BUDGET_WINDOW
+
+
 # Tesla rejects GET /api/1/dx/charging/history when the range is over one year.
 # Each window is 365 days so a leap day cannot push one request over that limit.
 CHARGING_HISTORY_WINDOW = timedelta(days=365)

@@ -2,7 +2,7 @@
 
 Tesla bills wakes and caps them at 3 per minute per device. The per-minute cap
 in this process cannot be configured above that. The daily cap and minimum gap
-default to 3 per day and 30 minutes.
+default to 3 wakes in a rolling 24-hour window and 30 minutes apart.
 """
 
 from __future__ import annotations
@@ -12,7 +12,7 @@ from datetime import datetime, timedelta
 
 from .config import HARD_WAKE_PER_MINUTE, Settings
 from .history import HistoryStore
-from .time_utils import local_day_start, utc_now
+from .time_utils import budget_window_start, utc_now
 from .vin import mask_vin
 
 _DENIED_OUTCOME = {
@@ -70,9 +70,8 @@ class WakeBudget:
         self.history.delete_wake(event_id)
 
     def _decide(self, sent: list[datetime], moment: datetime) -> WakeDecision:
-        used_today = sum(
-            1 for item in sent if item >= local_day_start(moment, self.settings.timezone)
-        )
+        window_start = budget_window_start(moment)
+        used_today = sum(1 for item in sent if item >= window_start)
         remaining = max(self.settings.wake_daily_cap - used_today, 0)
         window = moment - timedelta(seconds=60)
         in_minute = sum(1 for item in sent if item >= window)
@@ -89,9 +88,8 @@ class WakeBudget:
     def summary(self, *, now: datetime | None = None) -> dict[str, int]:
         moment = now or utc_now()
         sent = self.history.wake_times(outcome="sent")
-        used_today = sum(
-            1 for item in sent if item >= local_day_start(moment, self.settings.timezone)
-        )
+        window_start = budget_window_start(moment)
+        used_today = sum(1 for item in sent if item >= window_start)
         return {
             "used_today": used_today,
             "daily_cap": self.settings.wake_daily_cap,

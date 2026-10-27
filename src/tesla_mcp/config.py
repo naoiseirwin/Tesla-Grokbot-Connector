@@ -1,4 +1,8 @@
-"""Settings from the environment and an optional config.env. No secrets have defaults."""
+"""Settings from the process environment and an explicit config file.
+
+No secrets have defaults. A `.env` file in the working directory is not read.
+Fleet, token, and authorize URLs must be https on a Tesla host.
+"""
 
 from __future__ import annotations
 
@@ -18,7 +22,12 @@ DEFAULT_COMMANDS_DAILY_CAP = 10
 MAX_COMMANDS_DAILY_CAP = 40
 DEFAULT_COMMANDS_PER_COMMAND_DAILY_CAP = 3
 MAX_COMMANDS_PER_COMMAND_DAILY_CAP = 10
+DEFAULT_WAKE_DAILY_CAP = 3
+MAX_WAKE_DAILY_CAP = 10
+DEFAULT_WAKE_MIN_INTERVAL_SECONDS = 1800
+MAX_WAKE_MIN_INTERVAL_SECONDS = 24 * 60 * 60
 _LOOPBACK_HOSTS = frozenset({"localhost", "127.0.0.1", "::1"})
+_TESLA_ROOTS = ("tesla.com", "tesla.cn")
 _TRUE = {"1", "true", "yes", "on"}
 _FALSE = {"0", "false", "no", "off", ""}
 
@@ -97,8 +106,68 @@ def _proxy_url(value: str | None, *, allow_remote: bool) -> str | None:
     return url
 
 
+def _is_tesla_host(host: str) -> bool:
+    """True for tesla.com, tesla.cn, and their real subdomains.
+
+    ``tesla.com.evil.example`` and ``evil-tesla.com`` do not match. The host
+    must already be the hostname from ``urlparse``, not a raw URL.
+    """
+    name = host.strip().lower().rstrip(".")
+    if not name or any(char in name for char in "%\\/@ \t#?"):
+        return False
+    labels = name.split(".")
+    if any(not label or label.startswith("-") or label.endswith("-") for label in labels):
+        return False
+    return any(name == root or name.endswith("." + root) for root in _TESLA_ROOTS)
+
+
+def require_tesla_https_url(value: str, *, name: str) -> str:
+    """Return a Tesla https URL, or raise ValueError.
+
+    Fleet, token, and authorize URLs are pinned to Tesla hosts. Userinfo is
+    refused even when the text contains a Tesla name, so
+    ``https://auth.tesla.com@evil.example`` cannot receive a refresh token.
+    """
+    raw = value.strip()
+    if not raw or any(char in raw for char in "\r\n\t"):
+        raise ValueError(f"{name} must be an https URL on a Tesla host.")
+    parsed = urlparse(raw)
+    if parsed.username is not None or parsed.password is not None or "@" in parsed.netloc:
+        raise ValueError(
+            f"{name} must be an https URL on a Tesla host, with no username or password."
+        )
+    if parsed.scheme != "https" or not _is_tesla_host(parsed.hostname or ""):
+        raise ValueError(
+            f"{name} must be an https URL on a Tesla host such as auth.tesla.com, "
+            "fleet-auth.prd.vn.cloud.tesla.com, or "
+            "fleet-api.prd.<region>.vn.cloud.tesla.com. Other hosts are refused."
+        )
+    return raw.rstrip("/")
+
+
+def insecure_proxy_problem(url: str | None, insecure: bool) -> str | None:
+    """Refuse TLS verification off unless the proxy is on this computer.
+
+    The access token is sent to the proxy. Skipping certificate checks for a
+    host that is not loopback would let that host collect the token.
+    """
+    if not insecure or not url:
+        return None
+    host = (urlparse(url).hostname or "").lower()
+    if host in _LOOPBACK_HOSTS:
+        return None
+    return (
+        "TESLA_COMMAND_PROXY_INSECURE is only allowed when TESLA_COMMAND_PROXY_URL "
+        "points at this computer (localhost, 127.0.0.1, or ::1)."
+    )
+
+
 def load_config_files() -> None:
-    """Load config files without overriding variables already set in the process."""
+    """Load explicit config files. Never reads a `.env` from the working directory.
+
+    Process environment variables win. ``TESLA_MCP_CONFIG`` is loaded first,
+    then ``<data dir>/config.env``. Neither overrides a variable that is already set.
+    """
     explicit = os.environ.get("TESLA_MCP_CONFIG")
     if explicit:
         load_dotenv(explicit, override=False)
@@ -106,9 +175,6 @@ def load_config_files() -> None:
     config_env = data_dir / "config.env"
     if config_env.is_file():
         load_dotenv(config_env, override=False)
-    cwd_env = Path.cwd() / ".env"
-    if cwd_env.is_file():
-        load_dotenv(cwd_env, override=False)
 
 
 @dataclass(frozen=True)
@@ -215,10 +281,33 @@ class Settings:
             token_key = parse_key(key_raw)
         per_minute = _int(os.environ.get("TESLA_WAKE_PER_MINUTE"), HARD_WAKE_PER_MINUTE)
         per_minute = min(max(per_minute, 0), HARD_WAKE_PER_MINUTE)
-        daily = max(_int(os.environ.get("TESLA_WAKE_DAILY_CAP"), 3), 0)
-        interval = max(_int(os.environ.get("TESLA_WAKE_MIN_INTERVAL_SECONDS"), 1800), 0)
+        daily = _bounded_int(
+            os.environ.get("TESLA_WAKE_DAILY_CAP"),
+            DEFAULT_WAKE_DAILY_CAP,
+            name="TESLA_WAKE_DAILY_CAP",
+            upper=MAX_WAKE_DAILY_CAP,
+        )
+        interval = _bounded_int(
+            os.environ.get("TESLA_WAKE_MIN_INTERVAL_SECONDS"),
+            DEFAULT_WAKE_MIN_INTERVAL_SECONDS,
+            name="TESLA_WAKE_MIN_INTERVAL_SECONDS",
+            upper=MAX_WAKE_MIN_INTERVAL_SECONDS,
+        )
         poll_hours = float(os.environ.get("TESLA_POLL_INTERVAL_HOURS", "2"))
-        fleet_base = os.environ.get("TESLA_FLEET_API_BASE") or None
+        fleet_raw = (os.environ.get("TESLA_FLEET_API_BASE") or "").strip()
+        if fleet_raw:
+            fleet_base = require_tesla_https_url(fleet_raw, name="TESLA_FLEET_API_BASE")
+        else:
+            fleet_base = None
+            require_tesla_https_url(get_region(region).fleet_api, name="TESLA_FLEET_API_BASE")
+        token_url = require_tesla_https_url(
+            os.environ.get("TESLA_TOKEN_URL", TOKEN_URL),
+            name="TESLA_TOKEN_URL",
+        )
+        auth_url = require_tesla_https_url(
+            os.environ.get("TESLA_AUTH_URL", AUTHORIZE_URL),
+            name="TESLA_AUTH_URL",
+        )
         # Command variables (TESLA_ENABLE_COMMANDS, TESLA_COMMANDS_*, TESLA_COMMAND_PROXY_*)
         # are intentionally not read here. A bad value in the shared config.env must not
         # stop the read-only server. tesla_commands.config loads them for the commands server.
@@ -235,8 +324,8 @@ class Settings:
             wake_min_interval_seconds=interval,
             wake_per_minute_cap=per_minute,
             poll_interval_hours=poll_hours,
-            fleet_api_base=fleet_base.strip() if isinstance(fleet_base, str) else None,
-            token_url=os.environ.get("TESLA_TOKEN_URL", TOKEN_URL).strip(),
-            auth_url=os.environ.get("TESLA_AUTH_URL", AUTHORIZE_URL).strip(),
+            fleet_api_base=fleet_base,
+            token_url=token_url,
+            auth_url=auth_url,
             timezone=os.environ.get("TESLA_TIMEZONE", "UTC").strip() or "UTC",
         )

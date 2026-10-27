@@ -24,7 +24,7 @@ async def tesla_wake_and_refresh(
 ) -> dict[str, Any]:
     """Wake the car, then store a fresh snapshot. Refuses unless confirm is true.
 
-    Default budget: at most one wake every 30 minutes and 3 wakes per day.
+    Default budget: at most one wake every 30 minutes and 3 wakes in any 24-hour period.
     A hard cap of 3 wakes per minute cannot be raised. This is the only wake path.
     """
     if confirm is not True:
@@ -48,7 +48,6 @@ async def tesla_wake_and_refresh(
                     decision.reason,
                     runtime.settings.wake_min_interval_seconds,
                     runtime.settings.wake_daily_cap,
-                    runtime.settings.timezone,
                     runtime.wakes.per_minute_cap,
                 ),
                 "wakes_used_today": summary["used_today"],
@@ -145,9 +144,7 @@ def _release_unbilled(runtime: AppRuntime, event_id: int | None, exc: TeslaError
         runtime.wakes.release(event_id)
 
 
-def _budget_message(
-    reason: str, interval: int, daily_cap: int, tzname: str, per_minute: int
-) -> str:
+def _budget_message(reason: str, interval: int, daily_cap: int, per_minute: int) -> str:
     if reason == "per_minute":
         return (
             f"Wake blocked by the hard limit of {per_minute} wakes per minute. "
@@ -156,8 +153,5 @@ def _budget_message(
     if reason == "interval":
         return f"Wake blocked because the last wake was under {interval} seconds ago."
     if reason == "daily":
-        return (
-            f"Wake blocked because today's cap of {daily_cap} wakes is used. "
-            f"The cap resets at midnight ({tzname})."
-        )
+        return f"Wake blocked because the cap of {daily_cap} wakes in the last 24 hours is used."
     return "Wake blocked by the local budget."

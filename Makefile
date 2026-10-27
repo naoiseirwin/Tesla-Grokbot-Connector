@@ -56,13 +56,13 @@ format: ## Fix style violations and format code
 ##@ Development
 
 auth: ## Run the one-time Tesla sign-in
-	@uv run tesla-mcp auth
+	@uv run --frozen tesla-mcp auth
 
 poll: ## Take one no-wake snapshot of vehicles that are already online
-	@uv run tesla-mcp poll
+	@uv run --frozen tesla-mcp poll
 
 run: ## Run the stdio MCP server
-	@uv run tesla-mcp
+	@uv run --frozen tesla-mcp
 
 ##@ Info
 

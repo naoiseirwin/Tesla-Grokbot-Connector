@@ -20,6 +20,15 @@ Bot.
 
 CI runs gitleaks and a test that rejects private-key PEM headers in the tree.
 
+## Endpoint hosts
+
+`TESLA_FLEET_API_BASE`, `TESLA_TOKEN_URL`, and `TESLA_AUTH_URL` must be https
+URLs on a Tesla host (`*.tesla.com`, or the China fleet host under
+`*.tesla.cn`). The server refuses other hosts at startup, including `http`
+and userinfo such as `https://auth.tesla.com@evil.example`. Configuration
+comes from the process environment, `TESLA_MCP_CONFIG`, or
+`<data dir>/config.env`. A `.env` file in the working directory is not read.
+
 ## Token file
 
 Default location on a Grok Bot computer:

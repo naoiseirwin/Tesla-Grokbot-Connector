@@ -4,7 +4,9 @@ The read-only server never calls this module. `Settings.load` leaves every
 command field at its safe default, so a bad value in the shared config.env
 cannot stop `tesla-mcp`. This loader is what `tesla-commands-mcp` uses.
 Invalid values do not raise. They come back as `command_config_error`, and
-the commands server refuses every command.
+the commands server refuses every command. Fleet, token, and authorize URLs
+are checked in `Settings.load`, which both servers call first. A host that is
+not Tesla raises there, before this function runs.
 """
 
 from __future__ import annotations
@@ -22,6 +24,7 @@ from tesla_mcp.config import (
     _bounded_int,
     _csv,
     _proxy_url,
+    insecure_proxy_problem,
 )
 
 # Only these turn dry-run off. Blank, whitespace, and anything else stay in dry-run.
@@ -63,6 +66,9 @@ def apply_command_environment(settings: Settings) -> Settings:
         problems,
     )
     proxy = _proxy(allow_remote, problems)
+    insecure_problem = insecure_proxy_problem(proxy, insecure)
+    if insecure_problem:
+        problems.append(insecure_problem)
     ca_file = (os.environ.get("TESLA_COMMAND_PROXY_CA") or "").strip()
     if problems:
         # Fail closed: commands stay off, dry-run stays on, and there is no proxy.

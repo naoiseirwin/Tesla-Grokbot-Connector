@@ -69,8 +69,8 @@ command the car.
 - Three switches have to be on before anything is sent: commands enabled,
   the command named in the allowlist, and dry-run turned off. Leave dry-run
   on until you have seen the reply you expect.
-- The daily caps below stop a loop from commanding the car all day. They are
-  not a substitute for the allowlist.
+- The caps below count the last 24 hours. They stop a loop from commanding
+  the car without a break. They are not a substitute for the allowlist.
 - Waking a sleeping car costs money (about $0.02) and uses the same wake
   budget as `tesla_wake_and_refresh` (daily cap, minimum gap, and at most 3
   per minute). A command to a car that is already online does not use a wake.
@@ -90,28 +90,29 @@ command the car.
 | Variable | Default | Meaning |
 | --- | --- | --- |
 | `TESLA_ENABLE_COMMANDS` | `false` | Master switch. `false` refuses every command. |
-| `TESLA_COMMANDS_DRY_RUN` | `true` | Checks the request and returns what would be sent. It does not call Tesla. Stays on unless set to `false`, `0`, `no`, or `off`. A blank, whitespace, or unrecognized value stays on. |
+| `TESLA_COMMANDS_DRY_RUN` | `true` | Checks the request and returns what would be sent. It does not call Tesla. Turns off only for `false`, `0`, `no`, or `off`. A blank, whitespace, or any other value stays on. |
 | `TESLA_COMMANDS_ALLOWLIST` | empty | Comma-separated names from the table above. Empty means none are allowed. |
-| `TESLA_COMMANDS_DAILY_CAP` | `10` | Most commands per day, across all names. `0` to `40`. |
-| `TESLA_COMMANDS_PER_COMMAND_DAILY_CAP` | `3` | Most times one command can be sent per day. `0` to `10`. |
+| `TESLA_COMMANDS_DAILY_CAP` | `10` | Most commands in any rolling 24-hour window, across all names. `0` to `40`. |
+| `TESLA_COMMANDS_PER_COMMAND_DAILY_CAP` | `3` | Most times one command can be sent in that window. `0` to `10`. |
 | `TESLA_COMMAND_PROXY_URL` | unset | Local signing proxy, for example `https://127.0.0.1:4443`. Required for a live send. |
 | `TESLA_COMMAND_PROXY_CA` | unset | The proxy's TLS certificate file, so this program can trust it. |
-| `TESLA_COMMAND_PROXY_INSECURE` | `false` | Skip TLS checking. Leave this false and set `TESLA_COMMAND_PROXY_CA` instead. |
+| `TESLA_COMMAND_PROXY_INSECURE` | `false` | Skip TLS checking. Refused unless the proxy URL is loopback. Startup logs a warning when it is on. Prefer `TESLA_COMMAND_PROXY_CA`. |
 | `TESLA_COMMAND_PROXY_ALLOW_REMOTE` | `false` | Leave false. The access token is sent to the proxy URL, so the proxy must be on this computer. |
 
 A number above the maximum is rejected, so a typo cannot remove the cap.
-The day resets at midnight in `TESLA_TIMEZONE` (default `UTC`). Set
-`TESLA_TIMEZONE=America/New_York`, or another IANA name, so that midnight
-is local midnight instead of midnight UTC. An invalid timezone refuses
-every command. Nothing is sent.
+Counts use a rolling 24-hour window, not a calendar day. A command sent at
+23:50 still counts at 00:10. It drops out 24 hours after it was sent.
+`TESLA_TIMEZONE` does not move this window. It still applies to reports.
+An invalid timezone refuses every command. Nothing is sent.
 
 `tesla-mcp` does not read these variables. A bad command value in the
 shared `config.env` does not stop the read-only server. `tesla-commands-mcp`
 refuses the command and names the variable.
 
 Wakes started by a command count toward the same wake budget as
-`tesla_wake_and_refresh`: `TESLA_WAKE_DAILY_CAP` (default 3), the minimum
-gap, and the hard limit of 3 per minute. A command the command cap refuses
+`tesla_wake_and_refresh`: `TESLA_WAKE_DAILY_CAP` (default 3, maximum 10) in
+the same rolling 24-hour window, the minimum gap (default 30 minutes, maximum
+24 hours), and the hard limit of 3 per minute. A command the command cap refuses
 does not spend a wake.
 
 Copy the variables you need into the process environment or into
@@ -137,7 +138,7 @@ requests it.
 3. Sign in with the commands program, not the read-only one:
 
    ```bash
-   uv run --directory /workspace/tesla-grokbot-connector tesla-commands-mcp auth
+   uv run --frozen --directory /workspace/tesla-grokbot-connector tesla-commands-mcp auth
    ```
 
    Use Take over for Tesla login or MFA. Do not paste the code, the token,
@@ -287,7 +288,7 @@ Leave the existing `tesla` connector in place. Add a second stdio command.
 | --- | --- |
 | Name | `tesla-commands` |
 | Transport | stdio command on the Grok Bot computer |
-| Command | `uv run --directory /workspace/tesla-grokbot-connector tesla-commands-mcp` |
+| Command | `uv run --frozen --directory /workspace/tesla-grokbot-connector tesla-commands-mcp` |
 
 The process needs `TESLA_CLIENT_ID`, `TESLA_CLIENT_SECRET`, and
 `TESLA_TOKEN_KEY`, the same way the read-only connector does. Add the
@@ -314,15 +315,17 @@ server.
    nothing was sent. The car should not change.
 7. Open the audit log (below) and confirm the line says `"result":"dry_run"`
    and `"live":false`.
-8. Set `TESLA_COMMANDS_DRY_RUN=false` and restart the commands connector so
+8. Set `TESLA_COMMANDS_DRY_RUN=false` (`0`, `no`, and `off` are the only other
+   values that turn dry-run off) and restart the commands connector so
    it picks up the new value.
 9. Ask again and approve the prompt. The car should do that one thing.
 10. If the reply quotes Tesla, read that sentence. A signing failure means
     the key is not on the car, or the proxy is using a different private
     key than the public key on the domain.
 
-Dry-run does not use a daily command slot and does not wake the car.
-A live send does.
+Dry-run does not use a command slot and does not wake the car.
+A live send does. An unknown result (proxy timeout or HTTP 5xx after the
+request was sent) also uses a slot. It is not retried.
 
 ## Audit log
 
@@ -335,7 +338,7 @@ Every attempt is appended to:
 (`TESLA_MCP_DATA_DIR` moves it with the rest of the local data.)
 
 Each line is one JSON object: time, command, parameters, masked VIN,
-whether this was a dry run or a live send, the result, Tesla's reason
+whether this was a dry run, a live send, or an unknown outcome (`"live":"unknown"`), the result, Tesla's reason
 when there is one, and the refusal reason when it was refused. The file
 is mode `600`. It is append-only.
 
@@ -382,13 +385,14 @@ file should stay out of git and out of chat.
 | Not on `TESLA_COMMANDS_ALLOWLIST` | The name is missing, or the list is empty. |
 | Does not include `vehicle_cmds` | Sign in with `tesla-commands-mcp auth`, not `tesla-mcp auth`. |
 | Charge limit, temperature, or seat was refused | The number is outside Tesla's range. Nothing was sent. |
-| Daily cap or per-command cap | The local limit for today is used. It resets at midnight. |
-| Wake budget | The car was asleep and a wake was refused: the daily cap, the minimum gap since the last wake, or the hard limit of 3 wakes per minute. The command was not sent. |
+| Daily cap or per-command cap | The local limit for the last 24 hours is used. |
+| Wake budget | The car was asleep and a wake was refused: the 24-hour cap, the minimum gap since the last wake, or the hard limit of 3 wakes per minute. The command was not sent. |
+| `sent` is `"unknown"` | The proxy timed out, or it returned HTTP 5xx, after the request was sent. The car may already have acted. Check the vehicle before trying again. The attempt counts toward the cap and is not retried. |
 | `not_ready` | The command tool ran without a ready Tesla client. Nothing was sent. The attempt is in the audit log. |
 | Invalid `TESLA_TIMEZONE` or unreadable history file | The command was refused before any call. Nothing was sent. |
 | Invalid command setting | A command variable in the environment is not usable (for example a daily cap above 40, or a proxy URL that is not on this computer). Nothing was sent. The read-only server ignores that variable. |
 | `TESLA_COMMAND_PROXY_URL` is not set | Dry-run is off, but the proxy URL is missing. |
 | Tesla refused the command, followed by Tesla's sentence | The proxy or the car rejected it. Read that sentence. Tokens and full VINs are removed from it. Signing problems name the vehicle command protocol or an unsigned command. |
-| The proxy could not be reached | `tesla-http-proxy` is not running, or the URL or certificate path is wrong. |
+| The proxy could not be reached | `tesla-http-proxy` is not running, or the URL or certificate path is wrong. The command was not sent, and the slot was released. |
 
 A refused call is still written to the audit log, with the reason.

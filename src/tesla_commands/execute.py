@@ -29,12 +29,13 @@ from .audit import AuditLog, public_parameters, public_selector, scrub_text, scr
 from .budget import CommandBudget, CommandDecision
 from .catalog import COMMANDS, CommandSpec, build_body, command_allowed, would_send
 from .errors import CommandRefusal
-from .proxy import ProxyTransportError, require_proxy, send_command
+from .proxy import ProxyTransportError, ProxyUnknownOutcome, require_proxy, send_command
 
 _DISABLED = (
     "Vehicle commands are off. Nothing was sent to the car. "
     "Set TESLA_ENABLE_COMMANDS=true to allow this program to accept commands. "
-    "They still only describe the request until TESLA_COMMANDS_DRY_RUN=false. "
+    "They still only describe the request until TESLA_COMMANDS_DRY_RUN is "
+    "false, 0, no, or off. "
     "Read docs/COMMANDS.md before turning a command on."
 )
 _DRY_NOTE = (
@@ -314,6 +315,25 @@ async def _send_live(
             secrets=(token, runtime.settings.client_secret),
             spec=spec,
         )
+    except ProxyUnknownOutcome as exc:
+        # The body may have reached the proxy. Keep the slot. Do not retry.
+        return _finish(
+            runtime,
+            audit,
+            command=spec.name,
+            parameters=parameters,
+            vin_selector=vin_selector,
+            ok=False,
+            sent="unknown",
+            result="unknown",
+            error=exc.message,
+            error_type="unknown_outcome",
+            would=planned,
+            raw_vin=vehicle.vin,
+            woke=woke,
+            secrets=(token, runtime.settings.client_secret),
+            spec=spec,
+        )
     except CommandRefusal as exc:
         _release(budget, event_id)
         return _finish(
@@ -334,20 +354,31 @@ async def _send_live(
             spec=spec,
         )
 
+    if result.unknown:
+        # A 5xx arrived after the request was sent. Keep the slot. Do not retry.
+        _record_command_usage(runtime, vehicle.vin, spec.endpoint, result.http_status)
+        return _finish(
+            runtime,
+            audit,
+            command=spec.name,
+            parameters=parameters,
+            vin_selector=vin_selector,
+            ok=False,
+            sent="unknown",
+            result="unknown",
+            error=result.message,
+            error_type="unknown_outcome",
+            would=planned,
+            http_status=result.http_status,
+            tesla_reason=result.tesla_reason,
+            raw_vin=vehicle.vin,
+            woke=woke,
+            secrets=(token, runtime.settings.client_secret),
+            spec=spec,
+        )
     if event_id is not None and not result.billed:
         _release(budget, event_id)
-    try:
-        runtime.history.record_usage(
-            category="command",
-            endpoint=mask_path(f"/api/1/vehicles/{vehicle.vin}/command/{spec.endpoint}"),
-            http_status=result.http_status,
-            vin_masked=mask_vin(vehicle.vin),
-            estimated_usd=price_for("command", result.http_status),
-        )
-    except sqlite3.Error:
-        # The command already reached Tesla. Losing the usage row must not
-        # turn the reply into a claim that nothing was sent.
-        pass
+    _record_command_usage(runtime, vehicle.vin, spec.endpoint, result.http_status)
     if not result.ok:
         return _finish(
             runtime,
@@ -408,7 +439,7 @@ async def _wake_for_command(fleet: FleetClient, runtime: AppRuntime, vehicle: An
         raise CommandRefusal(
             "wake_pending",
             "The car was asked to wake, but it is not online yet. The command was not sent. "
-            "That wake still counts toward today's wake cap.",
+            "That wake still counts toward the 24-hour wake cap.",
         )
     return True
 
@@ -423,10 +454,7 @@ def _wake_message(reason: str, runtime: AppRuntime) -> str:
     elif reason == "interval":
         detail = f"the last wake was under {settings.wake_min_interval_seconds} seconds ago."
     elif reason == "daily":
-        detail = (
-            f"today's cap of {settings.wake_daily_cap} wakes is used. "
-            f"The cap resets at midnight ({settings.timezone})."
-        )
+        detail = f"the cap of {settings.wake_daily_cap} wakes in the last 24 hours is used."
     else:
         detail = "the local wake budget."
     return (
@@ -512,6 +540,26 @@ def _audit_not_ready(
     return {"parameters": parameters_public, "vehicle": vehicle, "error": error}
 
 
+def _record_command_usage(
+    runtime: AppRuntime,
+    vin: str,
+    endpoint: str,
+    http_status: int | None,
+) -> None:
+    try:
+        runtime.history.record_usage(
+            category="command",
+            endpoint=mask_path(f"/api/1/vehicles/{vin}/command/{endpoint}"),
+            http_status=http_status,
+            vin_masked=mask_vin(vin),
+            estimated_usd=price_for("command", http_status),
+        )
+    except sqlite3.Error:
+        # The command may already have reached Tesla. Losing the usage row must
+        # not turn the reply into a claim that nothing was sent.
+        return
+
+
 def _release(budget: CommandBudget, event_id: int | None) -> None:
     if event_id is None:
         return
@@ -544,16 +592,14 @@ def _cap_refusal(decision: CommandDecision, settings: Any, command: str) -> tupl
         return (
             "command_cap",
             f"{command} was refused because it has already been sent "
-            f"{decision.command_used_today} times today. The per-command cap is "
-            f"{settings.commands_per_command_daily_cap}. It resets at midnight "
-            f"({settings.timezone}). Nothing was sent to the car.",
+            f"{decision.command_used_today} times in the last 24 hours. The per-command cap is "
+            f"{settings.commands_per_command_daily_cap}. Nothing was sent to the car.",
         )
     return (
         "daily_cap",
         "The command was refused because "
-        f"{decision.used_today} commands were already sent today. The daily cap is "
-        f"{settings.commands_daily_cap}. It resets at midnight ({settings.timezone}). "
-        "Nothing was sent to the car.",
+        f"{decision.used_today} commands were already sent in the last 24 hours. The cap is "
+        f"{settings.commands_daily_cap}. Nothing was sent to the car.",
     )
 
 
@@ -565,7 +611,7 @@ def _finish(
     parameters: dict[str, Any],
     vin_selector: str | None,
     ok: bool,
-    sent: bool,
+    sent: bool | str,
     result: str,
     refusal_reason: str | None = None,
     error: str | None = None,

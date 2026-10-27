@@ -15,7 +15,8 @@ It is a separate program from tesla-mcp. The read-only connector is unchanged.
 
 Commands are refused unless TESLA_ENABLE_COMMANDS=true.
 TESLA_COMMANDS_DRY_RUN defaults to true: the server describes the request
-and does not call Tesla. An empty TESLA_COMMANDS_ALLOWLIST allows nothing.
+and does not call Tesla. Dry-run turns off only for false, 0, no, or off.
+An empty TESLA_COMMANDS_ALLOWLIST allows nothing.
 
 Read docs/COMMANDS.md before you turn a live command on.
 """.strip()
